@@ -25,7 +25,10 @@ public partial class MainWindow : Window
 
     // 待機セリフ用
     private readonly Avalonia.Threading.DispatcherTimer _idleTimer;
+    private readonly Avalonia.Threading.DispatcherTimer _speechHideTimer;
     private DateTime _lastInputAt = DateTime.Now;
+    private bool _isIdleSpeechShowing = false;
+    private bool _hasShownIdleSpeechSinceLastInput = false;
 
     // ランダムセリフ表示用
     private readonly Random _random = new();
@@ -88,6 +91,17 @@ public partial class MainWindow : Window
         _idleTimer.Tick += (s, e) => CheckIdle();
         _idleTimer.Start();
 
+        // セリフを5秒後に消す
+        _speechHideTimer = new Avalonia.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(5)
+        };
+        _speechHideTimer.Tick += (s, e) =>
+        {
+            _speechHideTimer.Stop();
+            HideIdleSpeech();
+        };
+
         _hook = new TaskPoolGlobalHook();
 
         // --- キーボードイベント（交互に動かす） ---
@@ -132,16 +146,36 @@ public partial class MainWindow : Window
     private void OnUserInput()
     {
         _lastInputAt = DateTime.Now;
+        _hasShownIdleSpeechSinceLastInput = false;
+
+        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+        {
+            _speechHideTimer.Stop();
+
+            if (_isIdleSpeechShowing)
+            {
+                HideIdleSpeech();
+            }
+        });
     }
 
     private void CheckIdle()
     {
         if (_isDragging) return;
+        if (_isIdleSpeechShowing) return;
+        if (_hasShownIdleSpeechSinceLastInput) return;
 
         var idleTime = DateTime.Now - _lastInputAt;
         if (idleTime < TimeSpan.FromSeconds(15)) return;
 
+        _hasShownIdleSpeechSinceLastInput = true;
         ShowRandomIdleMessage();
+    }
+
+    private void HideIdleSpeech()
+    {
+        _isIdleSpeechShowing = false;
+        UpdateCounterText();
     }
 
     private void UpdateCatPose(bool isKeyboard = false, bool? isLeftHand = null)
@@ -154,7 +188,10 @@ public partial class MainWindow : Window
 
         Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
         {
-            UpdateCounterText();
+            if (!_isIdleSpeechShowing)
+            {
+                UpdateCounterText();
+            }
 
             // ポーズの切り替え（前回のロジック）
             if (isKeyboard)
@@ -303,5 +340,8 @@ public partial class MainWindow : Window
 
         var index = _random.Next(_idleMessages.Length);
         CounterText.Text = _idleMessages[index];
+
+        _speechHideTimer.Stop();
+        _speechHideTimer.Start();
     }
 }
