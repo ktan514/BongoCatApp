@@ -1,12 +1,10 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
-using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using SharpHook;
 using System;
-using System.Diagnostics;
 
 namespace BongoCatAPP;
 
@@ -25,6 +23,9 @@ public partial class MainWindow : Window
 
     private bool _isGrabCursor = false;
 
+    // 待機セリフ用
+    private readonly Avalonia.Threading.DispatcherTimer _idleTimer;
+    private DateTime _lastInputAt = DateTime.Now;
 
     // ランダムセリフ表示用
     private readonly Random _random = new();
@@ -42,6 +43,20 @@ public partial class MainWindow : Window
         "これはこれでありかも？"
     ];
 
+    private readonly string[] _idleMessages =
+    [
+        "ひまだなー",
+        "なにかしようよ",
+        "待機中だよ",
+        "ねむくなってきた…",
+        "見てるよー",
+        "タイピングしてほしいな",
+        "しーん…",
+        "今日は何するの？",
+        "チャッピーはここだよ",
+        "ちょこん"
+    ];
+
     public MainWindow()
     {
         InitializeComponent();
@@ -50,14 +65,13 @@ public partial class MainWindow : Window
         _baseImage = new Bitmap(AssetLoader.Open(new Uri("avares://BongoCatAPP/Assets/cat_up.png")));
         _leftImage = new Bitmap(AssetLoader.Open(new Uri("avares://BongoCatAPP/Assets/cat_left.png")));
         _rightImage = new Bitmap(AssetLoader.Open(new Uri("avares://BongoCatAPP/Assets/cat_right.png")));
-        // _grabImage = new Bitmap(AssetLoader.Open(new Uri("avares://BongoCatAPP/Assets/cat_grab.png")));
         _grabImage1 = new Bitmap(AssetLoader.Open(new Uri("avares://BongoCatAPP/Assets/cat_grab_1.png")));
         _grabImage2 = new Bitmap(AssetLoader.Open(new Uri("avares://BongoCatAPP/Assets/cat_grab_2.png")));
 
         // アニメーション用のタイマー設定
         _animationTimer = new Avalonia.Threading.DispatcherTimer
         {
-            Interval = TimeSpan.FromMilliseconds(80) // 0.15秒ごとにバタバタ
+            Interval = TimeSpan.FromMilliseconds(80)
         };
         _animationTimer.Tick += (s, e) =>
         {
@@ -66,26 +80,68 @@ public partial class MainWindow : Window
             _isGrabImage1 = !_isGrabImage1;
         };
 
+        // 15秒待機判定
+        _idleTimer = new Avalonia.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(1)
+        };
+        _idleTimer.Tick += (s, e) => CheckIdle();
+        _idleTimer.Start();
+
         _hook = new TaskPoolGlobalHook();
 
         // --- キーボードイベント（交互に動かす） ---
-        _hook.KeyPressed += (s, e) => UpdateCatPose(isKeyboard: true);
+        _hook.KeyPressed += (s, e) =>
+        {
+            OnUserInput();
+            UpdateCatPose(isKeyboard: true);
+        };
 
         // --- マウスイベント（左右クリック） ---
         _hook.MousePressed += (s, e) =>
         {
-            if (e.Data.Button == SharpHook.Data.MouseButton.Button1) // 左クリック
+            OnUserInput();
+
+            if (e.Data.Button == SharpHook.Data.MouseButton.Button1)
+            {
                 UpdateCatPose(isLeftHand: true);
-            else if (e.Data.Button == SharpHook.Data.MouseButton.Button2) // 右クリック
+            }
+            else if (e.Data.Button == SharpHook.Data.MouseButton.Button2)
+            {
                 UpdateCatPose(isLeftHand: false);
+            }
         };
 
         // ボタンを離した時は元に戻す
-        _hook.KeyReleased += (s, e) => ResetPose();
-        _hook.MouseReleased += (s, e) => ResetPose();
+        _hook.KeyReleased += (s, e) =>
+        {
+            OnUserInput();
+            ResetPose();
+        };
+
+        _hook.MouseReleased += (s, e) =>
+        {
+            OnUserInput();
+            ResetPose();
+        };
 
         UpdateCounterText();
         _hook.RunAsync();
+    }
+
+    private void OnUserInput()
+    {
+        _lastInputAt = DateTime.Now;
+    }
+
+    private void CheckIdle()
+    {
+        if (_isDragging) return;
+
+        var idleTime = DateTime.Now - _lastInputAt;
+        if (idleTime < TimeSpan.FromSeconds(15)) return;
+
+        ShowRandomIdleMessage();
     }
 
     private void UpdateCatPose(bool isKeyboard = false, bool? isLeftHand = null)
@@ -134,6 +190,8 @@ public partial class MainWindow : Window
 
     protected void OnPointerPressed(object? sender, PointerPressedEventArgs e)
     {
+        OnUserInput();
+
         var currentPoint = e.GetCurrentPoint(CatImage); // 画像を基準にした座標を取得
         if (currentPoint.Properties.IsLeftButtonPressed)
         {
@@ -147,7 +205,7 @@ public partial class MainWindow : Window
                 ShowRandomDragMessage();
                 _animationTimer.Start();
 
-                this.BeginMoveDrag(e);
+                BeginMoveDrag(e);
             }
         }
     }
@@ -155,6 +213,8 @@ public partial class MainWindow : Window
     // 指を離した時は画像を戻すのを忘れずに！
     public void OnPointerReleased(object? sender, PointerReleasedEventArgs e)
     {
+        OnUserInput();
+
         if (_isDragging)
         {
             _isDragging = false;
@@ -163,13 +223,16 @@ public partial class MainWindow : Window
             UpdateCounterText();
         }
     }
+
     private void OnCloseClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
-        this.Close();
+        Close();
     }
 
     protected void OnPointerMoved(object? sender, PointerEventArgs e)
     {
+        OnUserInput();
+
         // ドラッグ中なら無視
         if (_isDragging) return;
 
@@ -197,24 +260,20 @@ public partial class MainWindow : Window
 
     private bool IsDragEnableArea(double x, double y)
     {
-        double _thresholdX = 100;
-        double _thresholdY = 50;
+        double thresholdX = 100;
+        double thresholdY = 50;
 
         // 画像のサイズを調べる
         if (CatImage.Source is null)
         {
             return false;
         }
+
         double width = CatImage.Source.Size.Width;
         double height = CatImage.Source.Size.Height;
 
         // 範囲判定
-        if (x >= _thresholdX && x < width && y <= _thresholdY && y < height)
-        {
-            return true;
-        }
-
-        return false;
+        return x >= thresholdX && x < width && y <= thresholdY && y < height;
     }
 
     private void UpdateCounterText()
@@ -234,4 +293,15 @@ public partial class MainWindow : Window
         CounterText.Text = _dragMessages[index];
     }
 
+    private void ShowRandomIdleMessage()
+    {
+        if (_idleMessages.Length == 0)
+        {
+            CounterText.Text = "……";
+            return;
+        }
+
+        var index = _random.Next(_idleMessages.Length);
+        CounterText.Text = _idleMessages[index];
+    }
 }
