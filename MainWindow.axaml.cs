@@ -25,10 +25,9 @@ public partial class MainWindow : Window
 
     // 待機セリフ用
     private readonly Avalonia.Threading.DispatcherTimer _idleTimer;
-    private readonly Avalonia.Threading.DispatcherTimer _speechHideTimer;
+    private readonly Avalonia.Threading.DispatcherTimer _idleMsgChangeTimer;
     private DateTime _lastInputAt = DateTime.Now;
-    private bool _isIdleSpeechShowing = false;
-    private bool _hasShownIdleSpeechSinceLastInput = false;
+    private bool _isIdleMsgShowing = false;
 
     // ランダムセリフ表示用
     private readonly Random _random = new();
@@ -56,7 +55,6 @@ public partial class MainWindow : Window
         "タイピングしてほしいな",
         "しーん…",
         "今日は何するの？",
-        "チャッピーはここだよ",
         "ちょこん"
     ];
 
@@ -91,15 +89,14 @@ public partial class MainWindow : Window
         _idleTimer.Tick += (s, e) => CheckIdle();
         _idleTimer.Start();
 
-        // セリフを5秒後に消す
-        _speechHideTimer = new Avalonia.Threading.DispatcherTimer
+        // セリフを数秒後に更新する
+        _idleMsgChangeTimer = new Avalonia.Threading.DispatcherTimer
         {
-            Interval = TimeSpan.FromSeconds(5)
+            Interval = TimeSpan.FromSeconds(30)
         };
-        _speechHideTimer.Tick += (s, e) =>
+        _idleMsgChangeTimer.Tick += (s, e) =>
         {
-            _speechHideTimer.Stop();
-            HideIdleSpeech();
+            ShowRandomIdleMessage();
         };
 
         _hook = new TaskPoolGlobalHook();
@@ -146,15 +143,14 @@ public partial class MainWindow : Window
     private void OnUserInput()
     {
         _lastInputAt = DateTime.Now;
-        _hasShownIdleSpeechSinceLastInput = false;
 
         Avalonia.Threading.Dispatcher.UIThread.Post(() =>
         {
-            _speechHideTimer.Stop();
-
-            if (_isIdleSpeechShowing)
+            if (_isIdleMsgShowing)
             {
-                HideIdleSpeech();
+                _idleMsgChangeTimer.Stop();
+                _isIdleMsgShowing = false;
+                UpdateCounterText();
             }
         });
     }
@@ -162,20 +158,14 @@ public partial class MainWindow : Window
     private void CheckIdle()
     {
         if (_isDragging) return;
-        if (_isIdleSpeechShowing) return;
-        if (_hasShownIdleSpeechSinceLastInput) return;
+        if (_isIdleMsgShowing) return;
 
         var idleTime = DateTime.Now - _lastInputAt;
-        if (idleTime < TimeSpan.FromSeconds(15)) return;
-
-        _hasShownIdleSpeechSinceLastInput = true;
-        ShowRandomIdleMessage();
-    }
-
-    private void HideIdleSpeech()
-    {
-        _isIdleSpeechShowing = false;
-        UpdateCounterText();
+        if (idleTime >= TimeSpan.FromSeconds(15))
+        {
+            ShowRandomIdleMessage();
+            _idleMsgChangeTimer.Start();
+        }
     }
 
     private void UpdateCatPose(bool isKeyboard = false, bool? isLeftHand = null)
@@ -188,7 +178,7 @@ public partial class MainWindow : Window
 
         Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
         {
-            if (!_isIdleSpeechShowing)
+            if (!_isIdleMsgShowing)
             {
                 UpdateCounterText();
             }
@@ -332,6 +322,8 @@ public partial class MainWindow : Window
 
     private void ShowRandomIdleMessage()
     {
+        _isIdleMsgShowing = true;
+
         if (_idleMessages.Length == 0)
         {
             CounterText.Text = "……";
@@ -340,8 +332,5 @@ public partial class MainWindow : Window
 
         var index = _random.Next(_idleMessages.Length);
         CounterText.Text = _idleMessages[index];
-
-        _speechHideTimer.Stop();
-        _speechHideTimer.Start();
     }
 }
