@@ -25,6 +25,23 @@ public partial class MainWindow : Window
 
     private bool _isGrabCursor = false;
 
+
+    // ランダムセリフ表示用
+    private readonly Random _random = new();
+    private readonly string[] _dragMessages =
+    [
+        "つかまったー！",
+        "はなしてほしいな…",
+        "ゆらゆらする！",
+        "どこいくの？",
+        "わーっ",
+        "びよーん",
+        "運ばれてる…",
+        "つままれ中！",
+        "空を飛んでる気分",
+        "これはこれでありかも？"
+    ];
+
     public MainWindow()
     {
         InitializeComponent();
@@ -67,6 +84,7 @@ public partial class MainWindow : Window
         _hook.KeyReleased += (s, e) => ResetPose();
         _hook.MouseReleased += (s, e) => ResetPose();
 
+        UpdateCounterText();
         _hook.RunAsync();
     }
 
@@ -80,8 +98,7 @@ public partial class MainWindow : Window
 
         Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
         {
-            // 数字の表示を更新
-            CounterText.Text = $"\\ {_count} /";
+            UpdateCounterText();
 
             // ポーズの切り替え（前回のロジック）
             if (isKeyboard)
@@ -127,6 +144,7 @@ public partial class MainWindow : Window
                 // アニメーション開始！ 
                 _isGrabImage1 = true;
                 CatImage.Source = _grabImage1;
+                ShowRandomDragMessage();
                 _animationTimer.Start();
 
                 this.BeginMoveDrag(e);
@@ -142,6 +160,7 @@ public partial class MainWindow : Window
             _isDragging = false;
             _animationTimer.Stop(); // アニメーション停止！
             CatImage.Source = _baseImage;
+            UpdateCounterText();
         }
     }
     private void OnCloseClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -197,4 +216,22 @@ public partial class MainWindow : Window
 
         return false;
     }
+
+    private void UpdateCounterText()
+    {
+        CounterText.Text = $"\\ {_count} /";
+    }
+
+    private void ShowRandomDragMessage()
+    {
+        if (_dragMessages.Length == 0)
+        {
+            CounterText.Text = "";
+            return;
+        }
+
+        var index = _random.Next(_dragMessages.Length);
+        CounterText.Text = _dragMessages[index];
+    }
+
 }
