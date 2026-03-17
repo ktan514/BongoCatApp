@@ -7,6 +7,7 @@ using Avalonia.Platform;
 using SharpHook;
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace BongoCatAPP;
 
@@ -42,9 +43,9 @@ public partial class MainWindow : Window
 
     // 待機セリフ用
     private readonly Avalonia.Threading.DispatcherTimer _idleTimer;
-    private readonly Avalonia.Threading.DispatcherTimer _idleMsgChangeTimer;
+    private readonly Avalonia.Threading.DispatcherTimer _tweetTimer;
     private DateTime _lastInputAt = DateTime.Now;
-    private bool _isIdleMsgShowing = false;
+    private bool _isTweeting = false;
 
     // ランダムセリフ表示用
     private readonly Random _random = new();
@@ -113,13 +114,13 @@ public partial class MainWindow : Window
         {
             if (_isDragging)
             {
-                CatImage.Source = _grabImages[_idxGrabImg];
+                UpdateCatImage(_grabImages[_idxGrabImg]);
                 _idxGrabImg = (_idxGrabImg + 1) % _grabImages.Length;
             }
             else if (_isWalking)
             {
                 SetWalkFacingDirection();
-                CatImage.Source = _walkImages[_idxWalkImg];
+                UpdateCatImage(_walkImages[_idxWalkImg]);
                 _idxWalkImg = (_idxWalkImg + 1) % _walkImages.Length;
             }
         };
@@ -133,11 +134,11 @@ public partial class MainWindow : Window
         _idleTimer.Start();
 
         // セリフを数秒後に更新する
-        _idleMsgChangeTimer = new Avalonia.Threading.DispatcherTimer
+        _tweetTimer = new Avalonia.Threading.DispatcherTimer
         {
             Interval = TimeSpan.FromSeconds(30)
         };
-        _idleMsgChangeTimer.Tick += (s, e) =>
+        _tweetTimer.Tick += (s, e) =>
         {
             ShowRandomIdleMessage();
         };
@@ -154,45 +155,61 @@ public partial class MainWindow : Window
 
         _hook = new TaskPoolGlobalHook();
 
-        // --- キーボードイベント（交互に動かす） ---
+        // キーを押した時
         _hook.KeyPressed += (s, e) =>
         {
-            OnUserInput();
-            UpdateCatPose(isKeyboard: true);
+            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                // ドラッグ中はカウントしない
+                if (_isDragging)
+                {
+                    return;
+                }
+
+                OnUserInput();
+                UpdateCatPose(isKeyboard: true);
+            });
         };
 
-        // --- マウスイベント（左右クリック） ---
-        _hook.MousePressed += (s, e) =>
-        {
-            OnUserInput();
-
-            if (e.Data.Button == SharpHook.Data.MouseButton.Button1)
-            {
-                UpdateCatPose(isLeftHand: true);
-            }
-            else if (e.Data.Button == SharpHook.Data.MouseButton.Button2)
-            {
-                UpdateCatPose(isLeftHand: false);
-            }
-        };
-
-        // ボタンを離した時は元に戻す
+        // ボタンを離した時
         _hook.KeyReleased += (s, e) =>
         {
-            if (_isDragging)
-            {
-                StopDrag();
-                return;
-            }
+            if (_isDragging) return;
 
-            OnUserInput();
-            ResetPose();
+            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                ResetPose();
+            });
         };
 
+        // マウスのボタンを押した時
+        _hook.MousePressed += (s, e) =>
+        {
+            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                OnUserInput();
+
+                if (e.Data.Button == SharpHook.Data.MouseButton.Button1)
+                {
+                    UpdateCatPose(isLeftHand: true);
+                }
+                else if (e.Data.Button == SharpHook.Data.MouseButton.Button2)
+                {
+                    UpdateCatPose(isLeftHand: false);
+                }
+            });
+        };
+
+        // マウスのボタンを離した時
         _hook.MouseReleased += (s, e) =>
         {
-            OnUserInput();
-            ResetPose();
+            if (_isDragging) return;
+
+            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                OnUserInput();
+                ResetPose();
+            });
         };
 
         UpdateCounterText();
@@ -207,29 +224,30 @@ public partial class MainWindow : Window
     private void OnUserInput()
     {
         _lastInputAt = DateTime.Now;
-StopIdleBehaviors();
+        StopIdleBehaviors();
     }
 
     private void CheckIdle()
     {
         // 待機状態の判定処理
         if (_isDragging) return;
-        if (_isIdleMsgShowing) return;
+        if (_isTweeting) return;
         if (_isWalking) return;
 
         var idleTime = DateTime.Now - _lastInputAt;
 
         // 一定時間以上待機が続いたら歩かせる
-        if (idleTime >= TimeSpan.FromSeconds(1))
+        if (idleTime >= TimeSpan.FromMinutes(1))
         {
             StartWalking();
+            return;
         }
 
         // 一定時間以上待機が続いたらしゃべらせる
         if (idleTime >= TimeSpan.FromSeconds(15))
         {
-            ShowRandomIdleMessage();
-            _idleMsgChangeTimer.Start();
+            StartTweeting();
+            return;
         }
     }
 
@@ -240,39 +258,26 @@ StopIdleBehaviors();
 
         // カウントを1増やす
         _count++;
+        UpdateCounterText();
 
-        Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
+        // ポーズの切り替え（前回のロジック）
+        int index = 0;
+        if (isKeyboard)
         {
-            if (!_isIdleMsgShowing)
-            {
-                UpdateCounterText();
-            }
-
-            // ポーズの切り替え（前回のロジック）
-            int index = 0;
-            if (isKeyboard)
-            {
-                // キーボードならランダムに切り替え
-                index = _random.Next(_actionImages.Length);
-            }
-            else if (isLeftHand.HasValue)
-            {
-                // マウスなら指定された方の手
-                index = isLeftHand.Value ? 0 : 1;
-            }
-            CatImage.Source = _actionImages[index];
-        });
+            // キーボードならランダムに切り替え
+            index = _random.Next(_actionImages.Length);
+        }
+        else if (isLeftHand.HasValue)
+        {
+            // マウスなら指定された方の手
+            index = isLeftHand.Value ? 0 : 1;
+        }
+        UpdateCatImage(_actionImages[index]);
     }
 
-    private void ResetPose()
+    private async void ResetPose()
     {
-        // ドラッグ中なら、キーボードやクリックによる画像更新をスキップ！
-        if (_isDragging) return;
-
-        Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
-        {
-            CatImage.Source = _idleImage;
-        });
+        UpdateCatImage(_idleImage);
     }
 
     protected void OnPointerPressed(object? sender, PointerPressedEventArgs e)
@@ -285,19 +290,19 @@ StopIdleBehaviors();
             return;
         }
         if (!IsDragEnableArea(currentPoint.Position.X, currentPoint.Position.Y))
-            {
+        {
             return;
         }
 
-                _isDragging = true;
+        _isDragging = true;
 
-                // アニメーション開始！ 
-                _idxGrabImg = 0;
-                CatImage.Source = _grabImages[_idxGrabImg];
-                ShowRandomDragMessage();
-                _animationTimer.Start();
+        // アニメーション開始！ 
+        _idxGrabImg = 0;
+        UpdateCatImage(_grabImages[_idxGrabImg]);
+        ShowRandomDragMessage();
+        _animationTimer.Start();
 
-                BeginMoveDrag(e);
+        BeginMoveDrag(e);
     }
 
     // 指を離した時は画像を戻すのを忘れずに！
@@ -314,10 +319,9 @@ StopIdleBehaviors();
     protected override void OnClosed(EventArgs e)
     {
         // 全てのタイマーを停止する
-        _walkTimer.Stop();
-        _idleTimer.Stop();
-        _idleMsgChangeTimer.Stop();
-        _animationTimer.Stop();
+        StopDrag();
+        StopWalking();
+        StopTweeting();
         // フックを止める
         _hook.Dispose();
         base.OnClosed(e);
@@ -330,8 +334,6 @@ StopIdleBehaviors();
 
     protected void OnPointerMoved(object? sender, PointerEventArgs e)
     {
-        OnUserInput();
-
         // ドラッグ中なら無視
         if (_isDragging) return;
 
@@ -375,39 +377,78 @@ StopIdleBehaviors();
         return x >= thresholdX && x < width && y <= thresholdY && y < height;
     }
 
+    private void UpdateCatImage(Bitmap source)
+    {
+        if (CatImage is null)
+        {
+            return;
+        }
+        CatImage.Source = source;
+    }
+
+    private void UpdateContextMssage(string text)
+    {
+        if (CounterText is null)
+        {
+            return;
+        }
+        CounterText.Text = text;
+    }
+
     private void UpdateCounterText()
     {
-        CounterText.Text = $"\\ {_count} /";
+        UpdateContextMssage($"\\ {_count} /");
     }
 
     private void ShowRandomDragMessage()
     {
         if (_dragMessages.Length == 0)
         {
-            CounterText.Text = "";
+            UpdateContextMssage("");
             return;
         }
 
         var index = _random.Next(_dragMessages.Length);
-        CounterText.Text = _dragMessages[index];
+        UpdateContextMssage(_dragMessages[index]);
     }
 
     private void ShowRandomIdleMessage()
     {
-        _isIdleMsgShowing = true;
+        _isTweeting = true;
 
         if (_idleMessages.Length == 0)
         {
-            CounterText.Text = "……";
+            UpdateContextMssage("……");
             return;
         }
 
         var index = _random.Next(_idleMessages.Length);
-        CounterText.Text = _idleMessages[index];
+        UpdateContextMssage(_idleMessages[index]);
+    }
+
+    private void StartTweeting()
+    {
+        if (_isTweeting) return;
+
+        ShowRandomIdleMessage();
+        _tweetTimer.Start();
+    }
+
+    private void StopTweeting()
+    {
+        if (!_isTweeting) return;
+
+        _tweetTimer.Stop();
+        _isTweeting = false;
+        _animationTimer.Stop();
+
+        ApplyFacing(false);
     }
 
     private void StartWalking()
     {
+        if (_isWalking) return;
+
         _isWalking = true;
 
         _walkDx = _random.Next(0, 2) == 0 ? -12 : 12;
