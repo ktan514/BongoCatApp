@@ -1,23 +1,40 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using SharpHook;
 using System;
+using System.Collections.Generic;
 
 namespace BongoCatAPP;
 
 public partial class MainWindow : Window
 {
+
+    private readonly string ASSETS_PATH = "avares://BongoCatAPP/Assets/";
+
+    private readonly string IMG_IDLE = "cat_up.png";
+    private readonly string IMG_ACTION_1 = "cat_left.png";
+    private readonly string IMG_ACTION_2 = "cat_right.png";
+    private readonly string IMG_GRAB_1 = "cat_grab_1.png";
+    private readonly string IMG_GRAB_2 = "cat_grab_2.png";
+    private readonly string IMG_WALK_1 = "cat_walk_1.png";
+    private readonly string IMG_WALK_2 = "cat_walk_2.png";
+
+    private readonly Bitmap _idleImage;
+    private readonly Bitmap[] _actionImages;
+    private readonly Bitmap[] _grabImages;
+    private readonly Bitmap[] _walkImages;
+
+
     private readonly TaskPoolGlobalHook _hook;
-    private readonly Bitmap _baseImage, _leftImage, _rightImage;
     private int _count = 0; // カウントを貯める変数
 
     // ドラッグ中アニメーション用制御変数
-    private readonly Bitmap _grabImage1, _grabImage2; // アニメーション用
-    private bool _isGrabImage1 = true;
-    private bool _isNextLeft = true; // 次にどっちの手を動かすかのフラグ
+    private int _idxGrabImg = 0;
+    private int _idxWalkImg = 0;
     private bool _isDragging = false; // ドラッグ中フラグ
     private readonly Avalonia.Threading.DispatcherTimer _animationTimer;
 
@@ -58,16 +75,34 @@ public partial class MainWindow : Window
         "ちょこん"
     ];
 
+    // 待機中モーション
+    private readonly Avalonia.Threading.DispatcherTimer _walkTimer;
+    private bool _isWalking = false;
+    private int _walkDx = 12;
+    private int _walkDy = 0;
+
     public MainWindow()
     {
         InitializeComponent();
 
         // 画像の読み込み
-        _baseImage = new Bitmap(AssetLoader.Open(new Uri("avares://BongoCatAPP/Assets/cat_up.png")));
-        _leftImage = new Bitmap(AssetLoader.Open(new Uri("avares://BongoCatAPP/Assets/cat_left.png")));
-        _rightImage = new Bitmap(AssetLoader.Open(new Uri("avares://BongoCatAPP/Assets/cat_right.png")));
-        _grabImage1 = new Bitmap(AssetLoader.Open(new Uri("avares://BongoCatAPP/Assets/cat_grab_1.png")));
-        _grabImage2 = new Bitmap(AssetLoader.Open(new Uri("avares://BongoCatAPP/Assets/cat_grab_2.png")));
+        _idleImage = LoadImage(ASSETS_PATH + IMG_IDLE);
+        _actionImages = [
+                    LoadImage(ASSETS_PATH + IMG_ACTION_1),
+                    LoadImage(ASSETS_PATH + IMG_ACTION_2)
+        ];
+        _grabImages = [
+                    LoadImage(ASSETS_PATH + IMG_GRAB_1),
+                    LoadImage(ASSETS_PATH + IMG_GRAB_2)
+        ];
+        _walkImages = [
+                    LoadImage(ASSETS_PATH + IMG_WALK_1),
+                    LoadImage(ASSETS_PATH + IMG_WALK_2)
+        ];
+
+
+        // 画像の向きを設定する
+        ApplyFacing(true);
 
         // アニメーション用のタイマー設定
         _animationTimer = new Avalonia.Threading.DispatcherTimer
@@ -76,9 +111,17 @@ public partial class MainWindow : Window
         };
         _animationTimer.Tick += (s, e) =>
         {
-            // ドラッグ中だけ画像を交互に切り替える
-            CatImage.Source = _isGrabImage1 ? _grabImage2 : _grabImage1;
-            _isGrabImage1 = !_isGrabImage1;
+            if (_isDragging)
+            {
+                CatImage.Source = _grabImages[_idxGrabImg];
+                _idxGrabImg = (_idxGrabImg + 1) % _grabImages.Length;
+            }
+            else if (_isWalking)
+            {
+                SetWalkFacingDirection();
+                CatImage.Source = _walkImages[_idxWalkImg];
+                _idxWalkImg = (_idxWalkImg + 1) % _walkImages.Length;
+            }
         };
 
         // 15秒待機判定
@@ -97,6 +140,16 @@ public partial class MainWindow : Window
         _idleMsgChangeTimer.Tick += (s, e) =>
         {
             ShowRandomIdleMessage();
+        };
+
+        // 待機中モーション用タイマー設定
+        _walkTimer = new Avalonia.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(120)
+        };
+        _walkTimer.Tick += (s, e) =>
+        {
+            WalkAround();
         };
 
         _hook = new TaskPoolGlobalHook();
@@ -140,6 +193,11 @@ public partial class MainWindow : Window
         _hook.RunAsync();
     }
 
+    private static Bitmap LoadImage(string filePath)
+    {
+        return new Bitmap(AssetLoader.Open(new Uri(filePath)));
+    }
+
     private void OnUserInput()
     {
         _lastInputAt = DateTime.Now;
@@ -152,15 +210,27 @@ public partial class MainWindow : Window
                 _isIdleMsgShowing = false;
                 UpdateCounterText();
             }
+
+            StopWalking();
         });
     }
 
     private void CheckIdle()
     {
+        // 待機状態の判定処理
         if (_isDragging) return;
         if (_isIdleMsgShowing) return;
+        if (_isWalking) return;
 
         var idleTime = DateTime.Now - _lastInputAt;
+
+        // 一定時間以上待機が続いたら歩かせる
+        if (idleTime >= TimeSpan.FromSeconds(1))
+        {
+            StartWalking();
+        }
+
+        // 一定時間以上待機が続いたらしゃべらせる
         if (idleTime >= TimeSpan.FromSeconds(15))
         {
             ShowRandomIdleMessage();
@@ -184,17 +254,18 @@ public partial class MainWindow : Window
             }
 
             // ポーズの切り替え（前回のロジック）
+            int index = 0;
             if (isKeyboard)
             {
-                // キーボードなら交互に切り替え
-                CatImage.Source = _isNextLeft ? _leftImage : _rightImage;
-                _isNextLeft = !_isNextLeft;
+                // キーボードならランダムに切り替え
+                index = _random.Next(_actionImages.Length);
             }
             else if (isLeftHand.HasValue)
             {
                 // マウスなら指定された方の手
-                CatImage.Source = isLeftHand.Value ? _leftImage : _rightImage;
+                index = isLeftHand.Value ? 0 : 1;
             }
+            CatImage.Source = _actionImages[index];
         });
     }
 
@@ -205,14 +276,8 @@ public partial class MainWindow : Window
 
         Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
         {
-            CatImage.Source = _baseImage;
+            CatImage.Source = _idleImage;
         });
-    }
-
-    protected override void OnClosed(EventArgs e)
-    {
-        _hook.Dispose();
-        base.OnClosed(e);
     }
 
     protected void OnPointerPressed(object? sender, PointerPressedEventArgs e)
@@ -227,8 +292,8 @@ public partial class MainWindow : Window
                 _isDragging = true;
 
                 // アニメーション開始！ 
-                _isGrabImage1 = true;
-                CatImage.Source = _grabImage1;
+                _idxGrabImg = 0;
+                CatImage.Source = _grabImages[_idxGrabImg];
                 ShowRandomDragMessage();
                 _animationTimer.Start();
 
@@ -246,14 +311,26 @@ public partial class MainWindow : Window
         {
             _isDragging = false;
             _animationTimer.Stop(); // アニメーション停止！
-            CatImage.Source = _baseImage;
+            CatImage.Source = _idleImage;
             UpdateCounterText();
         }
     }
 
+    protected override void OnClosed(EventArgs e)
+    {
+        // 全てのタイマーを停止する
+        _walkTimer.Stop();
+        _idleTimer.Stop();
+        _idleMsgChangeTimer.Stop();
+        _animationTimer.Stop();
+        // フックを止める
+        _hook.Dispose();
+        base.OnClosed(e);
+    }
+
     private void OnCloseClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
-        Close();
+        OnClosed(e);
     }
 
     protected void OnPointerMoved(object? sender, PointerEventArgs e)
@@ -332,5 +409,100 @@ public partial class MainWindow : Window
 
         var index = _random.Next(_idleMessages.Length);
         CounterText.Text = _idleMessages[index];
+    }
+
+    private void StartWalking()
+    {
+        _isWalking = true;
+
+        _walkDx = _random.Next(0, 2) == 0 ? -12 : 12;
+        _walkDy = 0;
+
+        SetWalkFacingDirection();
+
+        _walkTimer.Start();
+        _animationTimer.Start();
+    }
+
+    private void StopWalking()
+    {
+        if (!_isWalking) return;
+
+        _walkTimer.Stop();
+        _isWalking = false;
+        _animationTimer.Stop();
+
+        ApplyFacing(true);
+    }
+
+    private void WalkAround()
+    {
+        if (!_isWalking) return;
+        if (_isDragging) return;
+
+        var current = Position;
+
+        int dx = _walkDx;
+        int dy = _walkDy;
+
+        // たまに少し上下に揺らす
+        if (_random.Next(0, 8) == 0)
+        {
+            dy = _random.Next(-2, 3);
+        }
+
+        int newX = current.X + dx;
+        int newY = current.Y + dy;
+
+        var screen = Screens.Primary;
+        if (screen is null)
+        {
+            Position = new PixelPoint(newX, newY);
+            return;
+        }
+
+        var area = screen.WorkingArea;
+
+        int windowWidth = (int)Bounds.Width;
+        int windowHeight = (int)Bounds.Height;
+
+        int minX = area.X;
+        int minY = area.Y;
+        int maxX = area.X + area.Width - windowWidth;
+        int maxY = area.Y + area.Height - windowHeight;
+
+        // 左右端に当たったら反転
+        if (newX <= minX)
+        {
+            newX = minX;
+            _walkDx = Math.Abs(_walkDx);
+            SetWalkFacingDirection();
+        }
+        else if (newX >= maxX)
+        {
+            newX = maxX;
+            _walkDx = -Math.Abs(_walkDx);
+            SetWalkFacingDirection();
+        }
+
+        // 上下ははみ出さないように軽く補正
+        if (newY < minY) newY = minY;
+        if (newY > maxY) newY = maxY;
+
+        Position = new PixelPoint(newX, newY);
+    }
+
+    private void ApplyFacing(bool faceRight)
+    {
+        CatImage.RenderTransformOrigin = RelativePoint.Center;
+        CatImage.RenderTransform = faceRight
+            ? new ScaleTransform(-1, 1)
+            : new ScaleTransform(1, 1);
+    }
+
+    private void SetWalkFacingDirection()
+    {
+        // 右へ進むときは通常向き、左へ進むときは左右反転
+        ApplyFacing(_walkDx >= 0);
     }
 }
