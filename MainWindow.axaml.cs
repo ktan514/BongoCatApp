@@ -102,7 +102,7 @@ public partial class MainWindow : Window
 
 
         // 画像の向きを設定する
-        ApplyFacing(true);
+        ApplyFacing(false);
 
         // アニメーション用のタイマー設定
         _animationTimer = new Avalonia.Threading.DispatcherTimer
@@ -179,6 +179,12 @@ public partial class MainWindow : Window
         // ボタンを離した時は元に戻す
         _hook.KeyReleased += (s, e) =>
         {
+            if (_isDragging)
+            {
+                StopDrag();
+                return;
+            }
+
             OnUserInput();
             ResetPose();
         };
@@ -201,18 +207,7 @@ public partial class MainWindow : Window
     private void OnUserInput()
     {
         _lastInputAt = DateTime.Now;
-
-        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
-        {
-            if (_isIdleMsgShowing)
-            {
-                _idleMsgChangeTimer.Stop();
-                _isIdleMsgShowing = false;
-                UpdateCounterText();
-            }
-
-            StopWalking();
-        });
+StopIdleBehaviors();
     }
 
     private void CheckIdle()
@@ -285,10 +280,15 @@ public partial class MainWindow : Window
         OnUserInput();
 
         var currentPoint = e.GetCurrentPoint(CatImage); // 画像を基準にした座標を取得
-        if (currentPoint.Properties.IsLeftButtonPressed)
+        if (!currentPoint.Properties.IsLeftButtonPressed)
         {
-            if (IsDragEnableArea(currentPoint.Position.X, currentPoint.Position.Y))
+            return;
+        }
+        if (!IsDragEnableArea(currentPoint.Position.X, currentPoint.Position.Y))
             {
+            return;
+        }
+
                 _isDragging = true;
 
                 // アニメーション開始！ 
@@ -298,8 +298,6 @@ public partial class MainWindow : Window
                 _animationTimer.Start();
 
                 BeginMoveDrag(e);
-            }
-        }
     }
 
     // 指を離した時は画像を戻すのを忘れずに！
@@ -309,10 +307,7 @@ public partial class MainWindow : Window
 
         if (_isDragging)
         {
-            _isDragging = false;
-            _animationTimer.Stop(); // アニメーション停止！
-            CatImage.Source = _idleImage;
-            UpdateCounterText();
+            StopDrag();
         }
     }
 
@@ -330,7 +325,7 @@ public partial class MainWindow : Window
 
     private void OnCloseClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
-        OnClosed(e);
+        Close(e);
     }
 
     protected void OnPointerMoved(object? sender, PointerEventArgs e)
@@ -418,7 +413,7 @@ public partial class MainWindow : Window
         _walkDx = _random.Next(0, 2) == 0 ? -12 : 12;
         _walkDy = 0;
 
-        SetWalkFacingDirection();
+        RandomizeWalkDirection();
 
         _walkTimer.Start();
         _animationTimer.Start();
@@ -432,13 +427,19 @@ public partial class MainWindow : Window
         _isWalking = false;
         _animationTimer.Stop();
 
-        ApplyFacing(true);
+        ApplyFacing(false);
     }
 
     private void WalkAround()
     {
         if (!_isWalking) return;
         if (_isDragging) return;
+
+        // ときどき進行方向を変える
+        if (_random.Next(0, 20) == 0)
+        {
+            RandomizeWalkDirection();
+        }
 
         var current = Position;
 
@@ -471,7 +472,7 @@ public partial class MainWindow : Window
         int maxX = area.X + area.Width - windowWidth;
         int maxY = area.Y + area.Height - windowHeight;
 
-        // 左右端に当たったら反転
+        // 左右端に当たったらX方向だけ反転
         if (newX <= minX)
         {
             newX = minX;
@@ -485,9 +486,17 @@ public partial class MainWindow : Window
             SetWalkFacingDirection();
         }
 
-        // 上下ははみ出さないように軽く補正
-        if (newY < minY) newY = minY;
-        if (newY > maxY) newY = maxY;
+        // 上下端に当たったらY方向だけ反転
+        if (newY <= minY)
+        {
+            newY = minY;
+            _walkDy = Math.Abs(_walkDy);
+        }
+        else if (newY >= maxY)
+        {
+            newY = maxY;
+            _walkDy = -Math.Abs(_walkDy);
+        }
 
         Position = new PixelPoint(newX, newY);
     }
@@ -504,5 +513,45 @@ public partial class MainWindow : Window
     {
         // 右へ進むときは通常向き、左へ進むときは左右反転
         ApplyFacing(_walkDx >= 0);
+    }
+
+    private void StopIdleBehaviors()
+    {
+        StopTweeting();
+        StopWalking();
+
+        UpdateCounterText();
+    }
+
+    private void StopDrag()
+    {
+        _isDragging = false;
+        _animationTimer.Stop();
+        UpdateCatImage(_idleImage);
+        UpdateCounterText();
+    }
+
+    private void RandomizeWalkDirection()
+    {
+        // 速さ候補
+        int[] speeds = [6, 8, 10, 12];
+
+        int dx;
+        int dy;
+
+        do
+        {
+            dx = speeds[_random.Next(speeds.Length)] * (_random.Next(0, 2) == 0 ? -1 : 1);
+            dy = speeds[_random.Next(speeds.Length)] * (_random.Next(0, 2) == 0 ? -1 : 1);
+
+            // 少しだけ上下移動を控えめにしたいなら dy を半分にする
+            dy /= 2;
+        }
+        while (dx == 0 && dy == 0);
+
+        _walkDx = dx;
+        _walkDy = dy;
+
+        SetWalkFacingDirection();
     }
 }
