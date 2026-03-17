@@ -319,9 +319,10 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         // 全てのタイマーを停止する
-        StopDrag();
-        StopWalking();
-        StopTweeting();
+        _walkTimer.Stop();
+        _idleTimer.Stop();
+        _tweetTimer.Stop();
+        _animationTimer.Stop();
         // フックを止める
         _hook.Dispose();
         base.OnClosed(e);
@@ -454,6 +455,7 @@ public partial class MainWindow : Window
         _walkDx = _random.Next(0, 2) == 0 ? -12 : 12;
         _walkDy = 0;
 
+        UpdateContextMssage("");
         RandomizeWalkDirection();
 
         _walkTimer.Start();
