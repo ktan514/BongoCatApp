@@ -4,52 +4,51 @@ using Avalonia.Input;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
+using Avalonia.Threading;
 using SharpHook;
 using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Threading.Tasks;
 
 namespace BongoCatAPP;
 
 public partial class MainWindow : Window
 {
+    private const string AssetsPath = "avares://BongoCatAPP/Assets/";
 
-    private readonly string ASSETS_PATH = "avares://BongoCatAPP/Assets/";
+    private const string ImgIdle = "cat_up.png";
+    private const string ImgAction1 = "cat_left.png";
+    private const string ImgAction2 = "cat_right.png";
+    private const string ImgGrab1 = "cat_grab_1.png";
+    private const string ImgGrab2 = "cat_grab_2.png";
+    private const string ImgWalk1 = "cat_walk_1.png";
+    private const string ImgWalk2 = "cat_walk_2.png";
 
-    private readonly string IMG_IDLE = "cat_up.png";
-    private readonly string IMG_ACTION_1 = "cat_left.png";
-    private readonly string IMG_ACTION_2 = "cat_right.png";
-    private readonly string IMG_GRAB_1 = "cat_grab_1.png";
-    private readonly string IMG_GRAB_2 = "cat_grab_2.png";
-    private readonly string IMG_WALK_1 = "cat_walk_1.png";
-    private readonly string IMG_WALK_2 = "cat_walk_2.png";
+    private const int AnimationFps = 60;
+    private const double WalkAnimFps = 8.0;
+    private const double GrabAnimFps = 12.0;
 
-    private readonly Bitmap _idleImage;
-    private readonly Bitmap[] _actionImages;
-    private readonly Bitmap[] _grabImages;
-    private readonly Bitmap[] _walkImages;
+    private const double WalkSpeedX = 120.0;   // px/s
+    private const double WalkSpeedYScale = 0.5;
 
+    private const float WheelShakeBaseCycles = 3.0f;
+    private const float WheelShakeMinAmplitude = 0.0f;
+    private const double WheelShakePhasePerSecond = 80.0;
+
+    private const double DragThresholdX = 100;
+    private const double DragThresholdY = 50;
 
     private readonly TaskPoolGlobalHook _hook;
-    private int _count = 0; // カウントを貯める変数
-
-    // ドラッグ中アニメーション用制御変数
-    private int _idxGrabImg = 0;
-    private int _idxWalkImg = 0;
-    private bool _isDragging = false; // ドラッグ中フラグ
-    private readonly Avalonia.Threading.DispatcherTimer _animationTimer;
-
-    private bool _isGrabCursor = false;
-
-    // 待機セリフ用
-    private readonly Avalonia.Threading.DispatcherTimer _idleTimer;
-    private readonly Avalonia.Threading.DispatcherTimer _tweetTimer;
-    private DateTime _lastInputAt = DateTime.Now;
-    private bool _isTweeting = false;
-
-    // ランダムセリフ表示用
     private readonly Random _random = new();
+
+    private readonly DispatcherTimer _animationTimer;
+    private readonly DispatcherTimer _idleTimer;
+    private readonly DispatcherTimer _tweetTimer;
+
+    private readonly SpriteAssets _sprites;
+    private readonly BehaviorState _behavior = new();
+    private readonly WalkState _walk = new();
+    private readonly WheelShakeState _wheelShake = new();
+    private readonly AnimationState _animation = new();
+
     private readonly string[] _dragMessages =
     [
         "つかまったー！",
@@ -77,517 +76,323 @@ public partial class MainWindow : Window
         "ちょこん"
     ];
 
-    // 待機中モーション
-    private readonly Avalonia.Threading.DispatcherTimer _walkTimer;
-    private bool _isWalking = false;
-    private int _walkDx = 12;
-    private int _walkDy = 0;
-
-    private double _walkPosX;
-    private double _walkPosY;
-    private const double WalkSpeedX = 120.0;
-    private const double WalkSpeedYScale = 0.5;
-
-    private readonly TranslateTransform _catShakeTransform = new(0, 0);
-
-    private float _wheelShakeCycles = 0;
-    private float _wheelShakePhase = 0;
-    private float _wheelShakeInitialCycles = 0;
-    private float _wheelShakeCurrentAmplitude = 3.0f;
-
-    private const float WheelShakeBaseCycles = 3.0f;
-    private const float WheelShakeMinAmplitude = 0;
-
-    private readonly ScaleTransform _catFacingTransform = new(1, 1);
-    private readonly TransformGroup _catTransformGroup = new();
-
-    private DateTime _lastAnimationAt = DateTime.UtcNow;
-
-    private double _walkAnimElapsed = 0.0;
-    private double _grabAnimElapsed = 0.0;
-
-    private const double WalkAnimFps = 8.0;
-    private const double GrabAnimFps = 12.0;
-
-    private double _wheelShakeElapsed = 0.0;
-    private const double WheelShakePhasePerSecond = 80.0;
-
     public MainWindow()
     {
         InitializeComponent();
 
-        _catTransformGroup.Children.Add(_catFacingTransform);
-        _catTransformGroup.Children.Add(_catShakeTransform);
+        _sprites = LoadSprites();
+
+        _sprites.TransformGroup.Children.Add(_sprites.FacingTransform);
+        _sprites.TransformGroup.Children.Add(_sprites.ShakeTransform);
 
         CatImage.RenderTransformOrigin = RelativePoint.Center;
-        CatImage.RenderTransform = _catTransformGroup;
+        CatImage.RenderTransform = _sprites.TransformGroup;
 
-        // 画像の読み込み
-        _idleImage = LoadImage(ASSETS_PATH + IMG_IDLE);
-        _actionImages = [
-                    LoadImage(ASSETS_PATH + IMG_ACTION_1),
-                    LoadImage(ASSETS_PATH + IMG_ACTION_2)
-        ];
-        _grabImages = [
-                    LoadImage(ASSETS_PATH + IMG_GRAB_1),
-                    LoadImage(ASSETS_PATH + IMG_GRAB_2)
-        ];
-        _walkImages = [
-                    LoadImage(ASSETS_PATH + IMG_WALK_1),
-                    LoadImage(ASSETS_PATH + IMG_WALK_2)
-        ];
+        ApplyFacing(isRightFacing: false);
+        UpdateCatImage(_sprites.Idle);
+        UpdateCounterText();
 
-
-        // 画像の向きを設定する
-        ApplyFacing(false);
-
-        // アニメーション用のタイマー設定
-        _animationTimer = new Avalonia.Threading.DispatcherTimer
+        _animationTimer = new DispatcherTimer
         {
-            Interval = TimeSpan.FromMilliseconds(1000.0 / 60.0)
+            Interval = TimeSpan.FromMilliseconds(1000.0 / AnimationFps)
         };
-        _animationTimer.Tick += (s, e) => UpdateAnimationFrame();
+        _animationTimer.Tick += (_, _) => UpdateAnimationFrame();
         _animationTimer.Start();
 
-        // 15秒待機判定
-        _idleTimer = new Avalonia.Threading.DispatcherTimer
+        _idleTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromSeconds(1)
         };
-        _idleTimer.Tick += (s, e) => CheckIdle();
+        _idleTimer.Tick += (_, _) => CheckIdle();
         _idleTimer.Start();
 
-        // セリフを数秒後に更新する
-        _tweetTimer = new Avalonia.Threading.DispatcherTimer
+        _tweetTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromSeconds(30)
         };
-        _tweetTimer.Tick += (s, e) =>
+        _tweetTimer.Tick += (_, _) => ShowRandomIdleMessage();
+
+        _hook = CreateHook();
+        _hook.RunAsync();
+    }
+
+    private sealed class SpriteAssets
+    {
+        public required Bitmap Idle { get; init; }
+        public required Bitmap[] ActionImages { get; init; }
+        public required Bitmap[] GrabImages { get; init; }
+        public required Bitmap[] WalkImages { get; init; }
+
+        public TranslateTransform ShakeTransform { get; } = new(0, 0);
+        public ScaleTransform FacingTransform { get; } = new(1, 1);
+        public TransformGroup TransformGroup { get; } = new();
+    }
+
+    private sealed class BehaviorState
+    {
+        public int Count { get; set; }
+        public bool IsDragging { get; set; }
+        public bool IsGrabCursor { get; set; }
+        public bool IsTweeting { get; set; }
+        public bool IsWalking { get; set; }
+        public bool IsNextLeftAction { get; set; } = true;
+        public DateTime LastInputAt { get; set; } = DateTime.Now;
+    }
+
+    private sealed class WalkState
+    {
+        public int DirectionX { get; set; } = 12;
+        public int DirectionY { get; set; } = 0;
+        public double PositionX { get; set; }
+        public double PositionY { get; set; }
+        public int FrameIndex { get; set; }
+        public double FrameElapsed { get; set; }
+    }
+
+    private sealed class WheelShakeState
+    {
+        public float RemainingCycles { get; set; }
+        public int Phase { get; set; }
+        public float InitialCycles { get; set; }
+        public float CurrentAmplitude { get; set; } = 3.0f;
+        public double Elapsed { get; set; }
+    }
+
+    private sealed class AnimationState
+    {
+        public DateTime LastFrameAt { get; set; } = DateTime.UtcNow;
+        public int GrabFrameIndex { get; set; }
+        public double GrabFrameElapsed { get; set; }
+    }
+
+    private SpriteAssets LoadSprites()
+    {
+        return new SpriteAssets
         {
-            ShowRandomIdleMessage();
+            Idle = LoadImage(ImgIdle),
+            ActionImages =
+            [
+                LoadImage(ImgAction1),
+                LoadImage(ImgAction2)
+            ],
+            GrabImages =
+            [
+                LoadImage(ImgGrab1),
+                LoadImage(ImgGrab2)
+            ],
+            WalkImages =
+            [
+                LoadImage(ImgWalk1),
+                LoadImage(ImgWalk2)
+            ]
+        };
+    }
+
+    private static Bitmap LoadImage(string fileName)
+    {
+        return new Bitmap(AssetLoader.Open(new Uri(AssetsPath + fileName)));
+    }
+
+    private TaskPoolGlobalHook CreateHook()
+    {
+        var hook = new TaskPoolGlobalHook();
+
+        hook.KeyPressed += (_, _) =>
+        {
+            OnUserInput();
+            HandleKeyboardPressed();
         };
 
-        // 待機中モーション用タイマー設定
-        _walkTimer = new Avalonia.Threading.DispatcherTimer
+        hook.KeyReleased += (_, _) =>
         {
-            Interval = TimeSpan.FromMilliseconds(120)
-        };
-        _walkTimer.Tick += (s, e) =>
-        {
-            WalkAround();
-        };
-
-        _hook = new TaskPoolGlobalHook();
-
-        // キーを押した時
-        _hook.KeyPressed += (s, e) =>
-        {
-            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            if (_behavior.IsDragging)
             {
-                // ドラッグ中はカウントしない
-                if (_isDragging)
-                {
-                    return;
-                }
+                return;
+            }
 
-                OnUserInput();
-                UpdateCatPose(isKeyboard: true);
-            });
+            Dispatcher.UIThread.Post(SetIdlePose);
         };
 
-        // ボタンを離した時
-        _hook.KeyReleased += (s, e) =>
+        hook.MousePressed += (_, e) =>
         {
-            if (_isDragging) return;
-
-            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
-            {
-                ResetPose();
-            });
+            OnUserInput();
+            HandleMousePressed(e);
         };
 
-        // マウスのボタンを押した時
-        _hook.MousePressed += (s, e) =>
+        hook.MouseReleased += (_, _) =>
         {
-            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            if (_behavior.IsDragging)
             {
-                OnUserInput();
+                return;
+            }
 
-                if (e.Data.Button == SharpHook.Data.MouseButton.Button1)
-                {
-                    UpdateCatPose(isLeftHand: true);
-                }
-                else if (e.Data.Button == SharpHook.Data.MouseButton.Button2)
-                {
-                    UpdateCatPose(isLeftHand: false);
-                }
-            });
+            Dispatcher.UIThread.Post(SetIdlePose);
         };
 
-        // マウスのボタンを離した時
-        _hook.MouseReleased += (s, e) =>
+        hook.MouseWheel += (_, e) =>
         {
-            if (_isDragging) return;
+            OnUserInput();
 
-            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            Dispatcher.UIThread.Post(() =>
             {
-                OnUserInput();
-                ResetPose();
-            });
-        };
-
-        // マウスホイールを回した時
-        _hook.MouseWheel += (s, e) =>
-        {
-            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
-            {
-                if (_isDragging)
-                {
-                    return;
-                }
-
                 AddWheelShake(e.Data.Rotation);
             });
         };
 
-        UpdateCounterText();
-        _hook.RunAsync();
-    }
-
-    private static Bitmap LoadImage(string filePath)
-    {
-        return new Bitmap(AssetLoader.Open(new Uri(filePath)));
+        return hook;
     }
 
     private void OnUserInput()
     {
-        _lastInputAt = DateTime.Now;
-        StopIdleBehaviors();
+        _behavior.LastInputAt = DateTime.Now;
+        Dispatcher.UIThread.Post(StopIdleBehaviors);
+    }
+
+    private void HandleKeyboardPressed()
+    {
+        if (_behavior.IsDragging)
+        {
+            return;
+        }
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            _behavior.Count++;
+            UpdateCounterText();
+
+            int actionIndex = _behavior.IsNextLeftAction ? 0 : 1;
+            _behavior.IsNextLeftAction = !_behavior.IsNextLeftAction;
+
+            UpdateCatImage(_sprites.ActionImages[actionIndex]);
+        });
+    }
+
+    private void HandleMousePressed(MouseHookEventArgs e)
+    {
+        if (_behavior.IsDragging)
+        {
+            return;
+        }
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            switch (e.Data.Button)
+            {
+                case SharpHook.Data.MouseButton.Button1:
+                    _behavior.Count++;
+                    UpdateCounterText();
+                    UpdateCatImage(_sprites.ActionImages[0]);
+                    break;
+
+                case SharpHook.Data.MouseButton.Button2:
+                    _behavior.Count++;
+                    UpdateCounterText();
+                    UpdateCatImage(_sprites.ActionImages[1]);
+                    break;
+            }
+        });
     }
 
     private void CheckIdle()
     {
-        // 待機状態の判定処理
-        if (_isDragging) return;
-
-        var idleTime = DateTime.Now - _lastInputAt;
-
-        // 一定時間以上待機が続いたら歩かせる
-        if (idleTime >= TimeSpan.FromMinutes(1))
-        {
-            StartWalking();
-            return;
-        }
-
-        // 一定時間以上待機が続いたらしゃべらせる
-        if (idleTime >= TimeSpan.FromSeconds(15))
-        {
-            StartTweeting();
-            return;
-        }
-    }
-
-    private void UpdateCatPose(bool isKeyboard = false, bool? isLeftHand = null)
-    {
-        // ドラッグ中なら、キーボードやクリックによる画像更新をスキップ！
-        if (_isDragging) return;
-
-        // カウントを1増やす
-        _count++;
-        UpdateCounterText();
-
-        // ポーズの切り替え（前回のロジック）
-        int index = 0;
-        if (isKeyboard)
-        {
-            // キーボードならランダムに切り替え
-            index = _random.Next(_actionImages.Length);
-        }
-        else if (isLeftHand.HasValue)
-        {
-            // マウスなら指定された方の手
-            index = isLeftHand.Value ? 0 : 1;
-        }
-        UpdateCatImage(_actionImages[index]);
-    }
-
-    private async void ResetPose()
-    {
-        UpdateCatImage(_idleImage);
-    }
-
-    protected void OnPointerPressed(object? sender, PointerPressedEventArgs e)
-    {
-        OnUserInput();
-
-        var currentPoint = e.GetCurrentPoint(CatImage); // 画像を基準にした座標を取得
-        if (!currentPoint.Properties.IsLeftButtonPressed)
-        {
-            return;
-        }
-        if (!IsDragEnableArea(currentPoint.Position.X, currentPoint.Position.Y))
+        if (_behavior.IsDragging)
         {
             return;
         }
 
-        _isDragging = true;
+        var idleSeconds = (DateTime.Now - _behavior.LastInputAt).TotalSeconds;
 
-        // アニメーション開始！ 
-        _idxGrabImg = 0;
-        UpdateCatImage(_grabImages[_idxGrabImg]);
-        ShowRandomDragMessage();
-
-        BeginMoveDrag(e);
-    }
-
-    // 指を離した時は画像を戻すのを忘れずに！
-    public void OnPointerReleased(object? sender, PointerReleasedEventArgs e)
-    {
-        OnUserInput();
-
-        if (_isDragging)
+        if (idleSeconds >= 60)
         {
-            StopDrag();
-        }
-    }
-
-    protected override void OnClosed(EventArgs e)
-    {
-        // 全てのタイマーを停止する
-        _walkTimer.Stop();
-        _idleTimer.Stop();
-        _tweetTimer.Stop();
-        _animationTimer.Stop();
-        // フックを止める
-        _hook.Dispose();
-        base.OnClosed(e);
-    }
-
-    private void OnCloseClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
-    {
-        Close(e);
-    }
-
-    protected void OnPointerMoved(object? sender, PointerEventArgs e)
-    {
-        // ドラッグ中なら無視
-        if (_isDragging) return;
-
-        var currentPoint = e.GetCurrentPoint(CatImage); // 画像を基準にした座標を取得
-
-        if (IsDragEnableArea(currentPoint.Position.X, currentPoint.Position.Y))
-        {
-            // 範囲内に入ったら、カーソルを「グローブ（Hand）」にする
-            if (!_isGrabCursor)
+            if (!_behavior.IsWalking)
             {
-                CatImage.Cursor = new Cursor(StandardCursorType.Hand);
-                _isGrabCursor = true;
+                StartWalking();
+            }
+            }
+
+        if (idleSeconds >= 15)
+        {
+            if (!_behavior.IsTweeting)
+            {
+                StartTweeting();
             }
         }
-        else
-        {
-            // 範囲外に出たら、カーソルを「矢印（Arrow）」に戻す
-            if (_isGrabCursor)
-            {
-                CatImage.Cursor = new Cursor(StandardCursorType.Arrow);
-                _isGrabCursor = false;
-            }
-        }
-    }
-
-    private bool IsDragEnableArea(double x, double y)
-    {
-        double thresholdX = 100;
-        double thresholdY = 50;
-
-        // 画像のサイズを調べる
-        if (CatImage.Source is null)
-        {
-            return false;
-        }
-
-        double width = CatImage.Source.Size.Width;
-        double height = CatImage.Source.Size.Height;
-
-        // 範囲判定
-        return x >= thresholdX && x < width && y <= thresholdY && y < height;
-    }
-
-    private void UpdateCatImage(Bitmap source)
-    {
-        if (CatImage is null)
-        {
-            return;
-        }
-        CatImage.Source = source;
-    }
-
-    private void UpdateContextMssage(string text)
-    {
-        if (CounterText is null)
-        {
-            return;
-        }
-        CounterText.Text = text;
-    }
-
-    private void UpdateCounterText()
-    {
-        UpdateContextMssage($"\\ {_count} /");
-    }
-
-    private void ShowRandomDragMessage()
-    {
-        if (_dragMessages.Length == 0)
-        {
-            UpdateContextMssage("");
-            return;
-        }
-
-        var index = _random.Next(_dragMessages.Length);
-        UpdateContextMssage(_dragMessages[index]);
-    }
-
-    private void ShowRandomIdleMessage()
-    {
-        _isTweeting = true;
-
-        if (_idleMessages.Length == 0)
-        {
-            UpdateContextMssage("……");
-            return;
-        }
-
-        var index = _random.Next(_idleMessages.Length);
-        UpdateContextMssage(_idleMessages[index]);
     }
 
     private void StartTweeting()
     {
-        if (_isTweeting) return;
+        if (_behavior.IsTweeting)
+        {
+            return;
+        }
 
+        _behavior.IsTweeting = true;
         ShowRandomIdleMessage();
         _tweetTimer.Start();
     }
 
     private void StopTweeting()
     {
-        if (!_isTweeting) return;
+        if (!_behavior.IsTweeting)
+        {
+            return;
+        }
 
+        _behavior.IsTweeting = false;
         _tweetTimer.Stop();
-        _isTweeting = false;
+        UpdateContextMessage(string.Empty);
+    }
 
-        ApplyFacing(false);
+    private void ShowRandomIdleMessage()
+    {
+        if (!_behavior.IsTweeting || _idleMessages.Length == 0)
+        {
+            return;
+        }
+
+        string message = _idleMessages[_random.Next(_idleMessages.Length)];
+        UpdateContextMessage(message);
+    }
+
+    private void ShowRandomDragMessage()
+    {
+        if (_dragMessages.Length == 0)
+        {
+            return;
+        }
+
+        string message = _dragMessages[_random.Next(_dragMessages.Length)];
+        UpdateContextMessage(message);
     }
 
     private void StartWalking()
     {
-        if (_isWalking) return;
+        if (_behavior.IsWalking)
+        {
+            return;
+        }
 
-        _isWalking = true;
+        _behavior.IsWalking = true;
+        _walk.PositionX = Position.X;
+        _walk.PositionY = Position.Y;
+        _walk.FrameElapsed = 0.0;
+        _walk.FrameIndex = 0;
 
-        UpdateContextMssage("");
         RandomizeWalkDirection();
-
-        _walkPosX = Position.X;
-        _walkPosY = Position.Y;
+        UpdateContextMessage(string.Empty);
     }
 
     private void StopWalking()
     {
-        if (!_isWalking) return;
-
-        _walkTimer.Stop();
-        _isWalking = false;
-
-        ApplyFacing(false);
-    }
-
-    private void WalkAround()
-    {
-        if (!_isWalking) return;
-        if (_isDragging) return;
-
-        // ときどき進行方向を変える
-        if (_random.Next(0, 20) == 0)
+        if (!_behavior.IsWalking)
         {
-            RandomizeWalkDirection();
-        }
-
-        var current = Position;
-
-        int dx = _walkDx;
-        int dy = _walkDy;
-
-        // たまに少し上下に揺らす
-        if (_random.Next(0, 8) == 0)
-        {
-            dy = _random.Next(-2, 3);
-        }
-
-        int newX = current.X + dx;
-        int newY = current.Y + dy;
-
-        var screen = Screens.Primary;
-        if (screen is null)
-        {
-            Position = new PixelPoint(newX, newY);
             return;
         }
 
-        var area = screen.WorkingArea;
-
-        int windowWidth = (int)Bounds.Width;
-        int windowHeight = (int)Bounds.Height;
-
-        int minX = area.X;
-        int minY = area.Y;
-        int maxX = area.X + area.Width - windowWidth;
-        int maxY = area.Y + area.Height - windowHeight;
-
-        // 左右端に当たったらX方向だけ反転
-        if (newX <= minX)
-        {
-            newX = minX;
-            _walkDx = Math.Abs(_walkDx);
-            SetWalkFacingDirection();
-        }
-        else if (newX >= maxX)
-        {
-            newX = maxX;
-            _walkDx = -Math.Abs(_walkDx);
-            SetWalkFacingDirection();
-        }
-
-        // 上下端に当たったらY方向だけ反転
-        if (newY <= minY)
-        {
-            newY = minY;
-            _walkDy = Math.Abs(_walkDy);
-        }
-        else if (newY >= maxY)
-        {
-            newY = maxY;
-            _walkDy = -Math.Abs(_walkDy);
-        }
-
-        Position = new PixelPoint(newX, newY);
-    }
-
-    private void ApplyFacing(bool faceRight)
-    {
-        // CatImage.RenderTransformOrigin = RelativePoint.Center;
-        // CatImage.RenderTransform = faceRight
-        //     ? new ScaleTransform(-1, 1)
-        //     : new ScaleTransform(1, 1);
-        _catFacingTransform.ScaleX = faceRight ? -1 : 1;
-        _catFacingTransform.ScaleY = 1;
-    }
-
-    private void SetWalkFacingDirection()
-    {
-        // 右へ進むときは通常向き、左へ進むときは左右反転
-        ApplyFacing(_walkDx >= 0);
+        _behavior.IsWalking = false;
+        _walk.FrameElapsed = 0.0;
+        _walk.FrameIndex = 0;
+        ApplyFacing(isRightFacing: false);
     }
 
     private void StopIdleBehaviors()
@@ -595,19 +400,14 @@ public partial class MainWindow : Window
         StopTweeting();
         StopWalking();
 
-        UpdateCounterText();
-    }
-
-    private void StopDrag()
-    {
-        _isDragging = false;
-        UpdateCatImage(_idleImage);
-        UpdateCounterText();
+        if (!_behavior.IsDragging)
+        {
+            UpdateCounterText();
+        }
     }
 
     private void RandomizeWalkDirection()
     {
-        // 速さ候補
         int[] speeds = [2, 4, 5, 7];
 
         int dx;
@@ -617,131 +417,46 @@ public partial class MainWindow : Window
         {
             dx = speeds[_random.Next(speeds.Length)] * (_random.Next(0, 2) == 0 ? -1 : 1);
             dy = speeds[_random.Next(speeds.Length)] * (_random.Next(0, 2) == 0 ? -1 : 1);
-
-            // 少しだけ上下移動を控えめにしたいなら dy を半分にする
             dy /= 2;
         }
         while (dx == 0 && dy == 0);
 
-        _walkDx = dx;
-        _walkDy = dy;
+        _walk.DirectionX = dx;
+        _walk.DirectionY = dy;
 
         SetWalkFacingDirection();
     }
 
-    private void UpdateWalkMovement(double deltaTime)
-    {
-        if (!_isWalking || _isDragging)
-        {
-            return;
-        }
-
-        _walkPosX += _walkDx * WalkSpeedX * deltaTime / 7.0;
-        _walkPosY += _walkDy * WalkSpeedX * WalkSpeedYScale * deltaTime / 7.0;
-
-        int newX = (int)Math.Round(_walkPosX);
-        int newY = (int)Math.Round(_walkPosY);
-
-        var screen = Screens.Primary;
-        if (screen is null)
-        {
-            Position = new PixelPoint(newX, newY);
-            return;
-        }
-
-        var area = screen.WorkingArea;
-        int windowWidth = (int)Bounds.Width;
-        int windowHeight = (int)Bounds.Height;
-
-        int minX = area.X;
-        int minY = area.Y;
-        int maxX = area.X + area.Width - windowWidth;
-        int maxY = area.Y + area.Height - windowHeight;
-
-        if (newX <= minX)
-        {
-            newX = minX;
-            _walkPosX = newX;
-            _walkDx = Math.Abs(_walkDx);
-            SetWalkFacingDirection();
-        }
-        else if (newX >= maxX)
-        {
-            newX = maxX;
-            _walkPosX = newX;
-            _walkDx = -Math.Abs(_walkDx);
-            SetWalkFacingDirection();
-        }
-
-        if (newY <= minY)
-        {
-            newY = minY;
-            _walkPosY = newY;
-            _walkDy = Math.Abs(_walkDy);
-        }
-        else if (newY >= maxY)
-        {
-            newY = maxY;
-            _walkPosY = newY;
-            _walkDy = -Math.Abs(_walkDy);
-        }
-
-        Position = new PixelPoint(newX, newY);
-    }
-
     private void AddWheelShake(double rotation)
     {
-        _wheelShakeCycles = WheelShakeBaseCycles;
-        _wheelShakeInitialCycles = WheelShakeBaseCycles;
-        _wheelShakeCurrentAmplitude = WheelShakeBaseCycles;
+        _wheelShake.RemainingCycles = WheelShakeBaseCycles;
+        _wheelShake.InitialCycles = WheelShakeBaseCycles;
+        _wheelShake.CurrentAmplitude = Math.Max(3.0f, (float)Math.Min(5.0, Math.Abs(rotation) * 2.0));
     }
 
-    private void UpdateWheelShakeVisual(double deltaTime)
+    private float CalculateWheelShakeAmplitude()
     {
-        if (_wheelShakeCycles <= 0 && _wheelShakePhase == 0)
+        if (_wheelShake.InitialCycles <= 0)
         {
-            _catShakeTransform.X = 0;
-            _catShakeTransform.Y = 0;
-            return;
+            return WheelShakeMinAmplitude;
         }
 
-        _wheelShakeElapsed += deltaTime;
-        double phaseInterval = 1.0 / WheelShakePhasePerSecond;
+        float ratio = _wheelShake.RemainingCycles / _wheelShake.InitialCycles;
+        float amplitude = (float)Math.Round(_wheelShake.CurrentAmplitude * ratio);
 
-        while (_wheelShakeElapsed >= phaseInterval)
+        if (amplitude < WheelShakeMinAmplitude)
         {
-            _wheelShakeElapsed -= phaseInterval;
-
-            switch (_wheelShakePhase)
-            {
-                case 0:
-                    _catShakeTransform.Y = -3;
-                    _wheelShakePhase = 1;
-                    break;
-
-                case 1:
-                    _catShakeTransform.Y = 3;
-                    _wheelShakePhase = 2;
-                    break;
-
-                case 2:
-                    _catShakeTransform.Y = 0;
-                    _wheelShakePhase = 0;
-
-                    if (_wheelShakeCycles > 0)
-                    {
-                        _wheelShakeCycles--;
-                    }
-                    break;
-            }
+            amplitude = WheelShakeMinAmplitude;
         }
+
+        return amplitude;
     }
 
     private void UpdateAnimationFrame()
     {
         var now = DateTime.UtcNow;
-        double deltaTime = (now - _lastAnimationAt).TotalSeconds;
-        _lastAnimationAt = now;
+        double deltaTime = (now - _animation.LastFrameAt).TotalSeconds;
+        _animation.LastFrameAt = now;
 
         if (deltaTime > 0.1)
         {
@@ -753,34 +468,274 @@ public partial class MainWindow : Window
         UpdateWheelShakeVisual(deltaTime);
     }
 
+    private void UpdateWalkMovement(double deltaTime)
+    {
+        if (!_behavior.IsWalking || _behavior.IsDragging)
+        {
+            return;
+        }
+
+        _walk.PositionX += _walk.DirectionX * WalkSpeedX * deltaTime / 12.0;
+        _walk.PositionY += _walk.DirectionY * WalkSpeedX * WalkSpeedYScale * deltaTime / 12.0;
+
+        int newX = (int)Math.Round(_walk.PositionX);
+        int newY = (int)Math.Round(_walk.PositionY);
+
+        var screen = Screens.Primary;
+        if (screen is null)
+        {
+            Position = new PixelPoint(newX, newY);
+            return;
+        }
+
+        var area = screen.WorkingArea;
+        int windowWidth = (int)Bounds.Width;
+        int windowHeight = (int)Bounds.Height;
+
+        int minX = area.X;
+        int minY = area.Y;
+        int maxX = area.X + area.Width - windowWidth;
+        int maxY = area.Y + area.Height - windowHeight;
+
+        if (newX <= minX)
+        {
+            newX = minX;
+            _walk.PositionX = newX;
+            _walk.DirectionX = Math.Abs(_walk.DirectionX);
+            SetWalkFacingDirection();
+        }
+        else if (newX >= maxX)
+        {
+            newX = maxX;
+            _walk.PositionX = newX;
+            _walk.DirectionX = -Math.Abs(_walk.DirectionX);
+            SetWalkFacingDirection();
+        }
+
+        if (newY <= minY)
+        {
+            newY = minY;
+            _walk.PositionY = newY;
+            _walk.DirectionY = Math.Abs(_walk.DirectionY);
+        }
+        else if (newY >= maxY)
+        {
+            newY = maxY;
+            _walk.PositionY = newY;
+            _walk.DirectionY = -Math.Abs(_walk.DirectionY);
+        }
+
+        Position = new PixelPoint(newX, newY);
+    }
+
     private void UpdateSpriteAnimation(double deltaTime)
     {
-        if (_isDragging)
+        if (_behavior.IsDragging)
         {
-            _grabAnimElapsed += deltaTime;
+            _animation.GrabFrameElapsed += deltaTime;
             double frameInterval = 1.0 / GrabAnimFps;
 
-            while (_grabAnimElapsed >= frameInterval)
+            while (_animation.GrabFrameElapsed >= frameInterval)
             {
-                _grabAnimElapsed -= frameInterval;
-                _idxGrabImg = (_idxGrabImg + 1) % _grabImages.Length;
+                _animation.GrabFrameElapsed -= frameInterval;
+                _animation.GrabFrameIndex =
+                    (_animation.GrabFrameIndex + 1) % _sprites.GrabImages.Length;
             }
 
-            UpdateCatImage(_grabImages[_idxGrabImg]);
+            UpdateCatImage(_sprites.GrabImages[_animation.GrabFrameIndex]);
+            return;
         }
-        else if (_isWalking)
+
+        if (_behavior.IsWalking)
         {
-            _walkAnimElapsed += deltaTime;
+            _walk.FrameElapsed += deltaTime;
             double frameInterval = 1.0 / WalkAnimFps;
 
-            while (_walkAnimElapsed >= frameInterval)
+            while (_walk.FrameElapsed >= frameInterval)
             {
-                _walkAnimElapsed -= frameInterval;
-                _idxWalkImg = (_idxWalkImg + 1) % _walkImages.Length;
+                _walk.FrameElapsed -= frameInterval;
+                _walk.FrameIndex = (_walk.FrameIndex + 1) % _sprites.WalkImages.Length;
             }
 
             SetWalkFacingDirection();
-            UpdateCatImage(_walkImages[_idxWalkImg]);
+            UpdateCatImage(_sprites.WalkImages[_walk.FrameIndex]);
         }
+    }
+
+    private void UpdateWheelShakeVisual(double deltaTime)
+    {
+        if (_wheelShake.RemainingCycles <= 0 && _wheelShake.Phase == 0)
+        {
+            _sprites.ShakeTransform.X = 0;
+            _sprites.ShakeTransform.Y = 0;
+            return;
+        }
+
+        _wheelShake.Elapsed += deltaTime;
+        double phaseInterval = 1.0 / WheelShakePhasePerSecond;
+
+        while (_wheelShake.Elapsed >= phaseInterval)
+        {
+            _wheelShake.Elapsed -= phaseInterval;
+            float amplitude = CalculateWheelShakeAmplitude();
+
+            switch (_wheelShake.Phase)
+            {
+                case 0:
+                    _sprites.ShakeTransform.Y = -amplitude;
+                    _wheelShake.Phase = 1;
+                    break;
+
+                case 1:
+                    _sprites.ShakeTransform.Y = amplitude;
+                    _wheelShake.Phase = 2;
+                    break;
+
+                case 2:
+                    _sprites.ShakeTransform.Y = 0;
+                    _wheelShake.Phase = 0;
+
+                    if (_wheelShake.RemainingCycles > 0)
+                    {
+                        _wheelShake.RemainingCycles--;
+                    }
+                    break;
+            }
+        }
+    }
+
+    private void UpdateCatImage(IImage image)
+    {
+        CatImage.Source = image;
+    }
+
+    private void UpdateCounterText()
+    {
+        CounterText.Text = $"\\ {_behavior.Count} /";
+    }
+
+    private void UpdateContextMessage(string message)
+    {
+        CounterText.Text = message;
+    }
+
+    private void SetIdlePose()
+    {
+        UpdateCatImage(_sprites.Idle);
+    }
+
+    private void ApplyFacing(bool isRightFacing)
+    {
+        _sprites.FacingTransform.ScaleX = isRightFacing ? -1 : 1;
+        _sprites.FacingTransform.ScaleY = 1;
+    }
+
+    private void SetWalkFacingDirection()
+    {
+        ApplyFacing(_walk.DirectionX >= 0);
+    }
+
+    private void StartDrag(PointerPressedEventArgs e)
+    {
+        _behavior.IsDragging = true;
+        _animation.GrabFrameIndex = 0;
+        _animation.GrabFrameElapsed = 0.0;
+
+        StopIdleBehaviors();
+        ShowRandomDragMessage();
+
+        UpdateCatImage(_sprites.GrabImages[0]);
+        BeginMoveDrag(e);
+    }
+
+    private void StopDrag()
+    {
+        if (!_behavior.IsDragging)
+        {
+            return;
+        }
+
+        _behavior.IsDragging = false;
+        UpdateContextMessage(string.Empty);
+        SetIdlePose();
+        UpdateCounterText();
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _animationTimer.Stop();
+        _idleTimer.Stop();
+        _tweetTimer.Stop();
+        _hook.Dispose();
+
+        base.OnClosed(e);
+    }
+
+    protected void OnPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        var currentPoint = e.GetCurrentPoint(CatImage);
+
+        if (!currentPoint.Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        if (!IsDragEnabledArea(currentPoint.Position.X, currentPoint.Position.Y))
+        {
+            return;
+        }
+
+        OnUserInput();
+        StartDrag(e);
+    }
+
+    public void OnPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        StopDrag();
+    }
+
+    protected void OnPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_behavior.IsDragging)
+        {
+            return;
+        }
+
+        var currentPoint = e.GetCurrentPoint(CatImage);
+        bool isDragArea = IsDragEnabledArea(currentPoint.Position.X, currentPoint.Position.Y);
+
+        if (isDragArea && !_behavior.IsGrabCursor)
+        {
+            CatImage.Cursor = new Cursor(StandardCursorType.Hand);
+            _behavior.IsGrabCursor = true;
+            return;
+        }
+
+        if (!isDragArea && _behavior.IsGrabCursor)
+        {
+            CatImage.Cursor = new Cursor(StandardCursorType.Arrow);
+            _behavior.IsGrabCursor = false;
+        }
+    }
+
+    private void OnCloseClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        Close();
+    }
+
+    private bool IsDragEnabledArea(double x, double y)
+    {
+        if (CatImage.Source is null)
+        {
+            return false;
+        }
+
+        double width = CatImage.Source.Size.Width;
+        double height = CatImage.Source.Size.Height;
+
+        return x >= DragThresholdX &&
+               x < width &&
+               y <= DragThresholdY &&
+               y < height;
     }
 }
