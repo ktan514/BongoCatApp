@@ -47,6 +47,7 @@ public partial class MainWindow : Window
     private readonly Avalonia.Threading.DispatcherTimer _tweetTimer;
     private DateTime _lastInputAt = DateTime.Now;
     private bool _isTweeting = false;
+    private const int WheelDeltaPerNotch = 120;
 
     // ランダムセリフ表示用
     private readonly Random _random = new();
@@ -83,9 +84,24 @@ public partial class MainWindow : Window
     private int _walkDx = 12;
     private int _walkDy = 0;
 
+    private readonly TranslateTransform _catShakeTransform = new(0, 0);
+
+    private int _wheelShakeCycles = 0;
+    private int _wheelShakePhase = 0;
+    private const int WheelShakeAmplitude = 3;
+
+    private readonly ScaleTransform _catFacingTransform = new(1, 1);
+    private readonly TransformGroup _catTransformGroup = new();
+
     public MainWindow()
     {
         InitializeComponent();
+
+        _catTransformGroup.Children.Add(_catFacingTransform);
+        _catTransformGroup.Children.Add(_catShakeTransform);
+
+        CatImage.RenderTransformOrigin = RelativePoint.Center;
+        CatImage.RenderTransform = _catTransformGroup;
 
         // 画像の読み込み
         _idleImage = LoadImage(ASSETS_PATH + IMG_IDLE);
@@ -198,6 +214,20 @@ public partial class MainWindow : Window
             {
                 OnUserInput();
                 ResetPose();
+            });
+        };
+
+        // マウスホイールを回した時
+        _hook.MouseWheel += (s, e) =>
+        {
+            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                if (_isDragging)
+                {
+                    return;
+                }
+
+                AddWheelShake(e.Data.Rotation);
             });
         };
 
@@ -437,9 +467,6 @@ public partial class MainWindow : Window
 
         _isWalking = true;
 
-        _walkDx = _random.Next(0, 2) == 0 ? -12 : 12;
-        _walkDy = 0;
-
         UpdateContextMssage("");
         RandomizeWalkDirection();
 
@@ -529,10 +556,12 @@ public partial class MainWindow : Window
 
     private void ApplyFacing(bool faceRight)
     {
-        CatImage.RenderTransformOrigin = RelativePoint.Center;
-        CatImage.RenderTransform = faceRight
-            ? new ScaleTransform(-1, 1)
-            : new ScaleTransform(1, 1);
+        // CatImage.RenderTransformOrigin = RelativePoint.Center;
+        // CatImage.RenderTransform = faceRight
+        //     ? new ScaleTransform(-1, 1)
+        //     : new ScaleTransform(1, 1);
+        _catFacingTransform.ScaleX = faceRight ? -1 : 1;
+        _catFacingTransform.ScaleY = 1;
     }
 
     private void SetWalkFacingDirection()
@@ -559,7 +588,7 @@ public partial class MainWindow : Window
     private void RandomizeWalkDirection()
     {
         // 速さ候補
-        int[] speeds = [6, 8, 10, 12];
+        int[] speeds = [2, 4, 5, 7];
 
         int dx;
         int dy;
@@ -578,6 +607,39 @@ public partial class MainWindow : Window
         _walkDy = dy;
 
         SetWalkFacingDirection();
+    }
+
+    private void AddWheelShake(double rotation)
+    {
+        _wheelShakeCycles = 5;
+    }
+
+    private void UpdateWheelShakeVisual()
+    {
+        if (_wheelShakeCycles <= 0 && _wheelShakePhase == 0)
+        {
+            _catShakeTransform.X = 0;
+            _catShakeTransform.Y = 0;
+            return;
+        }
+
+        switch (_wheelShakePhase)
+        {
+            case 0:
+                _catShakeTransform.Y = -WheelShakeAmplitude;
+                _wheelShakePhase = 1;
+                break;
+
+            case 1:
+                _catShakeTransform.Y = 0;
+                _wheelShakePhase = 0;
+
+                if (_wheelShakeCycles > 0)
+                {
+                    _wheelShakeCycles--;
+                }
+                break;
+        }
     }
 
     private void UpdateAnimationFrame()
