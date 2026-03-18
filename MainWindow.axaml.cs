@@ -7,6 +7,7 @@ using Avalonia.Platform;
 using SharpHook;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading.Tasks;
 
 namespace BongoCatAPP;
@@ -108,22 +109,10 @@ public partial class MainWindow : Window
         // アニメーション用のタイマー設定
         _animationTimer = new Avalonia.Threading.DispatcherTimer
         {
-            Interval = TimeSpan.FromMilliseconds(80)
+            Interval = TimeSpan.FromMilliseconds(25)
         };
-        _animationTimer.Tick += (s, e) =>
-        {
-            if (_isDragging)
-            {
-                UpdateCatImage(_grabImages[_idxGrabImg]);
-                _idxGrabImg = (_idxGrabImg + 1) % _grabImages.Length;
-            }
-            else if (_isWalking)
-            {
-                SetWalkFacingDirection();
-                UpdateCatImage(_walkImages[_idxWalkImg]);
-                _idxWalkImg = (_idxWalkImg + 1) % _walkImages.Length;
-            }
-        };
+        _animationTimer.Tick += (s, e) => UpdateAnimationFrame();
+        _animationTimer.Start();
 
         // 15秒待機判定
         _idleTimer = new Avalonia.Threading.DispatcherTimer
@@ -231,8 +220,6 @@ public partial class MainWindow : Window
     {
         // 待機状態の判定処理
         if (_isDragging) return;
-        if (_isTweeting) return;
-        if (_isWalking) return;
 
         var idleTime = DateTime.Now - _lastInputAt;
 
@@ -300,7 +287,6 @@ public partial class MainWindow : Window
         _idxGrabImg = 0;
         UpdateCatImage(_grabImages[_idxGrabImg]);
         ShowRandomDragMessage();
-        _animationTimer.Start();
 
         BeginMoveDrag(e);
     }
@@ -441,7 +427,6 @@ public partial class MainWindow : Window
 
         _tweetTimer.Stop();
         _isTweeting = false;
-        _animationTimer.Stop();
 
         ApplyFacing(false);
     }
@@ -459,7 +444,6 @@ public partial class MainWindow : Window
         RandomizeWalkDirection();
 
         _walkTimer.Start();
-        _animationTimer.Start();
     }
 
     private void StopWalking()
@@ -468,7 +452,6 @@ public partial class MainWindow : Window
 
         _walkTimer.Stop();
         _isWalking = false;
-        _animationTimer.Stop();
 
         ApplyFacing(false);
     }
@@ -569,7 +552,6 @@ public partial class MainWindow : Window
     private void StopDrag()
     {
         _isDragging = false;
-        _animationTimer.Stop();
         UpdateCatImage(_idleImage);
         UpdateCounterText();
     }
@@ -596,5 +578,22 @@ public partial class MainWindow : Window
         _walkDy = dy;
 
         SetWalkFacingDirection();
+    }
+
+    private void UpdateAnimationFrame()
+    {
+        if (_isDragging)
+        {
+            UpdateCatImage(_grabImages[_idxGrabImg]);
+            _idxGrabImg = (_idxGrabImg + 1) % _grabImages.Length;
+        }
+        else if (_isWalking)
+        {
+            SetWalkFacingDirection();
+            UpdateCatImage(_walkImages[_idxWalkImg]);
+            _idxWalkImg = (_idxWalkImg + 1) % _walkImages.Length;
+        }
+
+        UpdateWheelShakeVisual();
     }
 }
