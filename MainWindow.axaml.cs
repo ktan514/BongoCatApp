@@ -1,12 +1,14 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Threading;
 using SharpHook;
 using System;
+using System.Collections.Generic;
 
 namespace BongoCatAPP;
 
@@ -14,13 +16,9 @@ public partial class MainWindow : Window
 {
     private const string AssetsPath = "avares://BongoCatAPP/Assets/";
 
-    private const string ImgIdle = "cat_up.png";
-    private const string ImgAction1 = "cat_left.png";
-    private const string ImgAction2 = "cat_right.png";
-    private const string ImgGrab1 = "cat_grab_1.png";
-    private const string ImgGrab2 = "cat_grab_2.png";
-    private const string ImgWalk1 = "cat_walk_1.png";
-    private const string ImgWalk2 = "cat_walk_2.png";
+    private readonly List<CharacterDefinition> _characters = [];
+    private CharacterDefinition? _currentCharacter;
+    private readonly Dictionary<string, SpriteAssets> _spriteCache = [];
 
     private const int AnimationFps = 60;
     private const double WalkAnimFps = 8.0;
@@ -43,7 +41,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _idleTimer;
     private readonly DispatcherTimer _tweetTimer;
 
-    private readonly SpriteAssets _sprites;
+    private SpriteAssets? _sprites = null;
     private readonly BehaviorState _behavior = new();
     private readonly WalkState _walk = new();
     private readonly WheelShakeState _wheelShake = new();
@@ -79,18 +77,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-
-        _sprites = LoadSprites();
-
-        _sprites.TransformGroup.Children.Add(_sprites.FacingTransform);
-        _sprites.TransformGroup.Children.Add(_sprites.ShakeTransform);
-
-        CatImage.RenderTransformOrigin = RelativePoint.Center;
-        CatImage.RenderTransform = _sprites.TransformGroup;
-
-        ApplyFacing(isRightFacing: false);
-        UpdateCatImage(_sprites.Idle);
-        UpdateCounterText();
+        InitializeCharacters();
+        SwitchCharacter("rabbit");
 
         _animationTimer = new DispatcherTimer
         {
@@ -165,27 +153,38 @@ public partial class MainWindow : Window
         public double GrabFrameElapsed { get; set; }
     }
 
-    private SpriteAssets LoadSprites()
+    private SpriteAssets LoadSprites(CharacterDefinition character)
     {
-        return new SpriteAssets
+        if (_spriteCache.TryGetValue(character.Id, out var cached))
         {
-            Idle = LoadImage(ImgIdle),
+            return cached;
+        }
+
+        var sprites = new SpriteAssets
+        {
+            Idle = LoadImage(character.IdleFile),
             ActionImages =
             [
-                LoadImage(ImgAction1),
-                LoadImage(ImgAction2)
+                LoadImage(character.ActionLeftFile),
+                LoadImage(character.ActionRightFile)
             ],
             GrabImages =
             [
-                LoadImage(ImgGrab1),
-                LoadImage(ImgGrab2)
+                LoadImage(character.Grab1File),
+                LoadImage(character.Grab2File)
             ],
             WalkImages =
             [
-                LoadImage(ImgWalk1),
-                LoadImage(ImgWalk2)
+                LoadImage(character.Walk1File),
+                LoadImage(character.Walk2File)
             ]
         };
+
+        sprites.TransformGroup.Children.Add(sprites.FacingTransform);
+        sprites.TransformGroup.Children.Add(sprites.ShakeTransform);
+
+        _spriteCache[character.Id] = sprites;
+        return sprites;
     }
 
     private static Bitmap LoadImage(string fileName)
@@ -263,7 +262,7 @@ public partial class MainWindow : Window
             int actionIndex = _behavior.IsNextLeftAction ? 0 : 1;
             _behavior.IsNextLeftAction = !_behavior.IsNextLeftAction;
 
-            UpdateCatImage(_sprites.ActionImages[actionIndex]);
+            UpdateCatImage(_sprites!.ActionImages[actionIndex]);
         });
     }
 
@@ -281,13 +280,13 @@ public partial class MainWindow : Window
                 case SharpHook.Data.MouseButton.Button1:
                     _behavior.Count++;
                     UpdateCounterText();
-                    UpdateCatImage(_sprites.ActionImages[0]);
+                    UpdateCatImage(_sprites!.ActionImages[0]);
                     break;
 
                 case SharpHook.Data.MouseButton.Button2:
                     _behavior.Count++;
                     UpdateCounterText();
-                    UpdateCatImage(_sprites.ActionImages[1]);
+                    UpdateCatImage(_sprites!.ActionImages[1]);
                     break;
             }
         });
@@ -308,7 +307,7 @@ public partial class MainWindow : Window
             {
                 StartWalking();
             }
-            }
+        }
 
         if (idleSeconds >= 15)
         {
@@ -539,10 +538,10 @@ public partial class MainWindow : Window
             {
                 _animation.GrabFrameElapsed -= frameInterval;
                 _animation.GrabFrameIndex =
-                    (_animation.GrabFrameIndex + 1) % _sprites.GrabImages.Length;
+                    (_animation.GrabFrameIndex + 1) % _sprites!.GrabImages.Length;
             }
 
-            UpdateCatImage(_sprites.GrabImages[_animation.GrabFrameIndex]);
+            UpdateCatImage(_sprites!.GrabImages[_animation.GrabFrameIndex]);
             return;
         }
 
@@ -554,11 +553,11 @@ public partial class MainWindow : Window
             while (_walk.FrameElapsed >= frameInterval)
             {
                 _walk.FrameElapsed -= frameInterval;
-                _walk.FrameIndex = (_walk.FrameIndex + 1) % _sprites.WalkImages.Length;
+                _walk.FrameIndex = (_walk.FrameIndex + 1) % _sprites!.WalkImages.Length;
             }
 
             SetWalkFacingDirection();
-            UpdateCatImage(_sprites.WalkImages[_walk.FrameIndex]);
+            UpdateCatImage(_sprites!.WalkImages[_walk.FrameIndex]);
         }
     }
 
@@ -566,8 +565,8 @@ public partial class MainWindow : Window
     {
         if (_wheelShake.RemainingCycles <= 0 && _wheelShake.Phase == 0)
         {
-            _sprites.ShakeTransform.X = 0;
-            _sprites.ShakeTransform.Y = 0;
+            _sprites!.ShakeTransform.X = 0;
+            _sprites!.ShakeTransform.Y = 0;
             return;
         }
 
@@ -582,17 +581,17 @@ public partial class MainWindow : Window
             switch (_wheelShake.Phase)
             {
                 case 0:
-                    _sprites.ShakeTransform.Y = -amplitude;
+                    _sprites!.ShakeTransform.Y = -amplitude;
                     _wheelShake.Phase = 1;
                     break;
 
                 case 1:
-                    _sprites.ShakeTransform.Y = amplitude;
+                    _sprites!.ShakeTransform.Y = amplitude;
                     _wheelShake.Phase = 2;
                     break;
 
                 case 2:
-                    _sprites.ShakeTransform.Y = 0;
+                    _sprites!.ShakeTransform.Y = 0;
                     _wheelShake.Phase = 0;
 
                     if (_wheelShake.RemainingCycles > 0)
@@ -621,13 +620,13 @@ public partial class MainWindow : Window
 
     private void SetIdlePose()
     {
-        UpdateCatImage(_sprites.Idle);
+        UpdateCatImage(_sprites!.Idle);
     }
 
     private void ApplyFacing(bool isRightFacing)
     {
-        _sprites.FacingTransform.ScaleX = isRightFacing ? -1 : 1;
-        _sprites.FacingTransform.ScaleY = 1;
+        _sprites!.FacingTransform.ScaleX = isRightFacing ? -1 : 1;
+        _sprites!.FacingTransform.ScaleY = 1;
     }
 
     private void SetWalkFacingDirection()
@@ -644,7 +643,7 @@ public partial class MainWindow : Window
         StopIdleBehaviors();
         ShowRandomDragMessage();
 
-        UpdateCatImage(_sprites.GrabImages[0]);
+        UpdateCatImage(_sprites!.GrabImages[0]);
         BeginMoveDrag(e);
     }
 
@@ -718,7 +717,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnCloseClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    private void OnCloseClick(object? sender, RoutedEventArgs e)
     {
         Close();
     }
@@ -737,5 +736,130 @@ public partial class MainWindow : Window
                x < width &&
                y <= DragThresholdY &&
                y < height;
+    }
+    private void InitializeCharacters()
+    {
+        _characters.Clear();
+
+        _characters.Add(new CharacterDefinition
+        {
+            Id = "cat",
+            DisplayName = "ねこ",
+            IdleFile = "cat/cat_up.png",
+            ActionLeftFile = "cat/cat_left.png",
+            ActionRightFile = "cat/cat_right.png",
+            Grab1File = "cat/cat_grab_1.png",
+            Grab2File = "cat/cat_grab_2.png",
+            Walk1File = "cat/cat_walk_1.png",
+            Walk2File = "cat/cat_walk_2.png"
+        });
+
+        _characters.Add(new CharacterDefinition
+        {
+            Id = "rabbit",
+            DisplayName = "うさぎ",
+            IdleFile = "rabbit/rabbit_up.png",
+            ActionLeftFile = "rabbit/rabbit_left.png",
+            ActionRightFile = "rabbit/rabbit_right.png",
+            Grab1File = "rabbit/rabbit_grab_1.png",
+            Grab2File = "rabbit/rabbit_grab_2.png",
+            Walk1File = "rabbit/rabbit_walk_1.png",
+            Walk2File = "rabbit/rabbit_walk_2.png"
+        });
+    }
+
+    private void SwitchCharacter(string characterId)
+    {
+        var character = _characters.Find(x => x.Id == characterId);
+        if (character is null)
+        {
+            return;
+        }
+
+        _currentCharacter = character;
+
+        StopDrag();
+        StopWalking();
+        StopTweeting();
+
+        _wheelShake.RemainingCycles = 0;
+        _wheelShake.Phase = 0;
+        _wheelShake.InitialCycles = 0;
+        _wheelShake.Elapsed = 0;
+
+        _sprites = LoadSprites(character);
+
+        CatImage.RenderTransformOrigin = RelativePoint.Center;
+        CatImage.RenderTransform = _sprites.TransformGroup;
+
+        ApplyFacing(isRightFacing: false);
+        UpdateCatImage(_sprites.Idle);
+        UpdateCounterText();
+        RefreshCharacterMenuChecks();
+    }
+
+    private void OnCharacterMenuOpened(object? sender, RoutedEventArgs e)
+    {
+        if (CharacterMenuRoot is null)
+        {
+            return;
+        }
+
+        var items = new List<MenuItem>();
+
+        foreach (var character in _characters)
+        {
+            var item = new MenuItem
+            {
+                Header = character.DisplayName,
+                ToggleType = MenuItemToggleType.Radio,
+                IsChecked = _currentCharacter?.Id == character.Id,
+                Tag = character.Id
+            };
+
+            item.Click += OnCharacterMenuItemClick;
+            items.Add(item);
+        }
+
+        CharacterMenuRoot.ItemsSource = items;
+    }
+
+    private void OnCharacterMenuItemClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem item || item.Tag is not string characterId)
+        {
+            return;
+        }
+
+        SwitchCharacter(characterId);
+    }
+
+    private void RefreshCharacterMenuChecks()
+    {
+        if (CharacterMenuRoot?.Items is null)
+        {
+            return;
+        }
+
+        foreach (var obj in CharacterMenuRoot.Items)
+        {
+            if (obj is MenuItem item && item.Tag is string id)
+            {
+                item.IsChecked = _currentCharacter?.Id == id;
+            }
+        }
+    }
+
+    private sealed class CharacterDefinition
+    {
+        public required string Id { get; init; }
+        public required string DisplayName { get; init; }
+        public required string IdleFile { get; init; }
+        public required string ActionLeftFile { get; init; }
+        public required string ActionRightFile { get; init; }
+        public required string Grab1File { get; init; }
+        public required string Grab2File { get; init; }
+        public required string Walk1File { get; init; }
+        public required string Walk2File { get; init; }
     }
 }
