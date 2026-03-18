@@ -47,7 +47,6 @@ public partial class MainWindow : Window
     private readonly Avalonia.Threading.DispatcherTimer _tweetTimer;
     private DateTime _lastInputAt = DateTime.Now;
     private bool _isTweeting = false;
-    private const int WheelDeltaPerNotch = 120;
 
     // ランダムセリフ表示用
     private readonly Random _random = new();
@@ -84,14 +83,34 @@ public partial class MainWindow : Window
     private int _walkDx = 12;
     private int _walkDy = 0;
 
+    private double _walkPosX;
+    private double _walkPosY;
+    private const double WalkSpeedX = 120.0;
+    private const double WalkSpeedYScale = 0.5;
+
     private readonly TranslateTransform _catShakeTransform = new(0, 0);
 
-    private int _wheelShakeCycles = 0;
-    private int _wheelShakePhase = 0;
-    private const int WheelShakeAmplitude = 3;
+    private float _wheelShakeCycles = 0;
+    private float _wheelShakePhase = 0;
+    private float _wheelShakeInitialCycles = 0;
+    private float _wheelShakeCurrentAmplitude = 3.0f;
+
+    private const float WheelShakeBaseCycles = 3.0f;
+    private const float WheelShakeMinAmplitude = 0;
 
     private readonly ScaleTransform _catFacingTransform = new(1, 1);
     private readonly TransformGroup _catTransformGroup = new();
+
+    private DateTime _lastAnimationAt = DateTime.UtcNow;
+
+    private double _walkAnimElapsed = 0.0;
+    private double _grabAnimElapsed = 0.0;
+
+    private const double WalkAnimFps = 8.0;
+    private const double GrabAnimFps = 12.0;
+
+    private double _wheelShakeElapsed = 0.0;
+    private const double WheelShakePhasePerSecond = 80.0;
 
     public MainWindow()
     {
@@ -125,7 +144,7 @@ public partial class MainWindow : Window
         // アニメーション用のタイマー設定
         _animationTimer = new Avalonia.Threading.DispatcherTimer
         {
-            Interval = TimeSpan.FromMilliseconds(25)
+            Interval = TimeSpan.FromMilliseconds(1000.0 / 60.0)
         };
         _animationTimer.Tick += (s, e) => UpdateAnimationFrame();
         _animationTimer.Start();
@@ -470,7 +489,8 @@ public partial class MainWindow : Window
         UpdateContextMssage("");
         RandomizeWalkDirection();
 
-        _walkTimer.Start();
+        _walkPosX = Position.X;
+        _walkPosY = Position.Y;
     }
 
     private void StopWalking()
@@ -609,12 +629,74 @@ public partial class MainWindow : Window
         SetWalkFacingDirection();
     }
 
-    private void AddWheelShake(double rotation)
+    private void UpdateWalkMovement(double deltaTime)
     {
-        _wheelShakeCycles = 5;
+        if (!_isWalking || _isDragging)
+        {
+            return;
+        }
+
+        _walkPosX += _walkDx * WalkSpeedX * deltaTime / 7.0;
+        _walkPosY += _walkDy * WalkSpeedX * WalkSpeedYScale * deltaTime / 7.0;
+
+        int newX = (int)Math.Round(_walkPosX);
+        int newY = (int)Math.Round(_walkPosY);
+
+        var screen = Screens.Primary;
+        if (screen is null)
+        {
+            Position = new PixelPoint(newX, newY);
+            return;
+        }
+
+        var area = screen.WorkingArea;
+        int windowWidth = (int)Bounds.Width;
+        int windowHeight = (int)Bounds.Height;
+
+        int minX = area.X;
+        int minY = area.Y;
+        int maxX = area.X + area.Width - windowWidth;
+        int maxY = area.Y + area.Height - windowHeight;
+
+        if (newX <= minX)
+        {
+            newX = minX;
+            _walkPosX = newX;
+            _walkDx = Math.Abs(_walkDx);
+            SetWalkFacingDirection();
+        }
+        else if (newX >= maxX)
+        {
+            newX = maxX;
+            _walkPosX = newX;
+            _walkDx = -Math.Abs(_walkDx);
+            SetWalkFacingDirection();
+        }
+
+        if (newY <= minY)
+        {
+            newY = minY;
+            _walkPosY = newY;
+            _walkDy = Math.Abs(_walkDy);
+        }
+        else if (newY >= maxY)
+        {
+            newY = maxY;
+            _walkPosY = newY;
+            _walkDy = -Math.Abs(_walkDy);
+        }
+
+        Position = new PixelPoint(newX, newY);
     }
 
-    private void UpdateWheelShakeVisual()
+    private void AddWheelShake(double rotation)
+    {
+        _wheelShakeCycles = WheelShakeBaseCycles;
+        _wheelShakeInitialCycles = WheelShakeBaseCycles;
+        _wheelShakeCurrentAmplitude = WheelShakeBaseCycles;
+    }
+
+    private void UpdateWheelShakeVisual(double deltaTime)
     {
         if (_wheelShakeCycles <= 0 && _wheelShakePhase == 0)
         {
@@ -623,39 +705,82 @@ public partial class MainWindow : Window
             return;
         }
 
-        switch (_wheelShakePhase)
+        _wheelShakeElapsed += deltaTime;
+        double phaseInterval = 1.0 / WheelShakePhasePerSecond;
+
+        while (_wheelShakeElapsed >= phaseInterval)
         {
-            case 0:
-                _catShakeTransform.Y = -WheelShakeAmplitude;
-                _wheelShakePhase = 1;
-                break;
+            _wheelShakeElapsed -= phaseInterval;
 
-            case 1:
-                _catShakeTransform.Y = 0;
-                _wheelShakePhase = 0;
+            switch (_wheelShakePhase)
+            {
+                case 0:
+                    _catShakeTransform.Y = -3;
+                    _wheelShakePhase = 1;
+                    break;
 
-                if (_wheelShakeCycles > 0)
-                {
-                    _wheelShakeCycles--;
-                }
-                break;
+                case 1:
+                    _catShakeTransform.Y = 3;
+                    _wheelShakePhase = 2;
+                    break;
+
+                case 2:
+                    _catShakeTransform.Y = 0;
+                    _wheelShakePhase = 0;
+
+                    if (_wheelShakeCycles > 0)
+                    {
+                        _wheelShakeCycles--;
+                    }
+                    break;
+            }
         }
     }
 
     private void UpdateAnimationFrame()
     {
+        var now = DateTime.UtcNow;
+        double deltaTime = (now - _lastAnimationAt).TotalSeconds;
+        _lastAnimationAt = now;
+
+        if (deltaTime > 0.1)
+        {
+            deltaTime = 0.1;
+        }
+
+        UpdateWalkMovement(deltaTime);
+        UpdateSpriteAnimation(deltaTime);
+        UpdateWheelShakeVisual(deltaTime);
+    }
+
+    private void UpdateSpriteAnimation(double deltaTime)
+    {
         if (_isDragging)
         {
+            _grabAnimElapsed += deltaTime;
+            double frameInterval = 1.0 / GrabAnimFps;
+
+            while (_grabAnimElapsed >= frameInterval)
+            {
+                _grabAnimElapsed -= frameInterval;
+                _idxGrabImg = (_idxGrabImg + 1) % _grabImages.Length;
+            }
+
             UpdateCatImage(_grabImages[_idxGrabImg]);
-            _idxGrabImg = (_idxGrabImg + 1) % _grabImages.Length;
         }
         else if (_isWalking)
         {
+            _walkAnimElapsed += deltaTime;
+            double frameInterval = 1.0 / WalkAnimFps;
+
+            while (_walkAnimElapsed >= frameInterval)
+            {
+                _walkAnimElapsed -= frameInterval;
+                _idxWalkImg = (_idxWalkImg + 1) % _walkImages.Length;
+            }
+
             SetWalkFacingDirection();
             UpdateCatImage(_walkImages[_idxWalkImg]);
-            _idxWalkImg = (_idxWalkImg + 1) % _walkImages.Length;
         }
-
-        UpdateWheelShakeVisual();
     }
 }
